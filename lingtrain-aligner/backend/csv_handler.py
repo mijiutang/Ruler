@@ -20,10 +20,18 @@ class CSVHandler:
         Args:
             csv_dir (str): CSV文件存储目录
         """
-        self.csv_dir = csv_dir
+        # 确保使用绝对路径
+        if not os.path.isabs(csv_dir):
+            # 获取当前脚本所在目录的父目录，然后添加csv_dir
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            parent_dir = os.path.dirname(current_dir)
+            self.csv_dir = os.path.join(parent_dir, csv_dir)
+        else:
+            self.csv_dir = csv_dir
+            
         # 确保目录存在
-        if not os.path.exists(csv_dir):
-            os.makedirs(csv_dir)
+        if not os.path.exists(self.csv_dir):
+            os.makedirs(self.csv_dir)
     
     def save_table(self, table_name, data, overwrite=False):
         """

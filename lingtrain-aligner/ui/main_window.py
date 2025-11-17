@@ -350,8 +350,6 @@ class MainWindow(QMainWindow):
         add_col_action.triggered.connect(self.on_add_column)
         toolbar.addAction(add_col_action)
         
-
-        
         toolbar.addSeparator()
         
         # 保存功能已废弃，不再添加到工具栏
@@ -360,6 +358,11 @@ class MainWindow(QMainWindow):
         load_action = QAction("加载", self)
         load_action.triggered.connect(self.on_load)
         toolbar.addAction(load_action)
+        
+        # 刷新表格按钮
+        refresh_action = QAction("刷新", self)
+        refresh_action.triggered.connect(self.refresh_table)
+        toolbar.addAction(refresh_action)
     
     def create_table_browser(self):
         """创建表浏览器停靠窗口"""
@@ -381,7 +384,11 @@ class MainWindow(QMainWindow):
         self.table_browser_dock.dockLocationChanged.connect(self.on_dock_location_changed)
     
     def load_selected_table(self, table_id):
-        """加载选中的表格"""
+        """加载选中的表格 - 内存优化版本，减少不必要的数据同步"""
+        # 只在数据确实被修改时才同步到磁盘
+        if self.controller.is_modified:
+            self.controller.save_table()
+        
         # 检查table_id是整数（数据库模式）还是字符串（CSV文件路径）
         if isinstance(table_id, int):
             # 数据库模式
@@ -493,11 +500,11 @@ class MainWindow(QMainWindow):
 
     
     def on_cell_changed(self, row, col):
-        """单元格内容变化事件处理"""
+        """单元格内容变化事件处理 - 优化版本，减少磁盘同步频率"""
         value = self.table.item(row, col).text() if self.table.item(row, col) else ""
         self.controller.set_cell_data(row, col, value)
         
-        # 自动调整行高
+        # 只对当前修改的行进行行高调整，而不是所有行
         self.table.resizeRowToContents(row)
         
         # 更新保存按钮状态
@@ -514,15 +521,14 @@ class MainWindow(QMainWindow):
             rows, ok_rows = QInputDialog.getInt(self, "新建表格", "请输入行数:", 10, 1, 1000)
             if ok_rows:
                 # 弹出对话框让用户输入列数
-                cols, ok_cols = QInputDialog.getInt(self, "新建表格", "请输入列数:", 10, 1, 1000)
+                cols, ok_cols = QInputDialog.getInt(self, "新建表格", "请输入列数:", 4, 1, 1000)
                 if ok_cols:
-                    # 创建指定尺寸的表格
-                    self.controller.new_table(rows, cols)
-                    # 不实际保存文件，只更新UI
-                    self.controller.current_table_name = table_name
+                    # 创建指定尺寸的表格并保存到CSV文件
+                    self.controller.new_table(rows, cols, table_name)
+                    # 更新UI
                     self.update_table()  # 更新表格显示
                     self.update_window_title()
-                    self.statusBar().showMessage(f"已新建{rows}*{cols}表格: {table_name}")
+                    self.statusBar().showMessage(f"已新建并保存{rows}×{cols}表格: {table_name}")
                 else:
                     # 用户取消了列数输入
                     self.statusBar().showMessage("已取消创建表格")
@@ -585,7 +591,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(title)
     
     def update_table(self):
-        """更新表格显示"""
+        """更新表格显示 - 内存优化版本，支持大型表格"""
         data = self.controller.get_table_data()
         if data is not None:
             rows = len(data)
@@ -598,15 +604,46 @@ class MainWindow(QMainWindow):
             self.table.setRowCount(rows)
             self.table.setColumnCount(cols)
             
-            # 填充数据
+            # 暂时禁用表格更新以提高性能
+            self.table.setUpdatesEnabled(False)
+            
+            # 批量创建和设置单元格项
+            items = []
             for i in range(rows):
                 for j in range(cols):
                     item = QTableWidgetItem(str(data[i][j]))
-                    self.table.setItem(i, j, item)
+                    items.append((i, j, item))
             
-            # 自动调整行高
-            for row in range(rows):
-                self.table.resizeRowToContents(row)
+            # 批量设置单元格项
+            for i, j, item in items:
+                self.table.setItem(i, j, item)
+            
+            # 重新启用表格更新
+            self.table.setUpdatesEnabled(True)
+            
+            # 对于大型表格，延迟调整行高以提高性能
+            if rows > 1000:
+                # 对于大型表格，只调整当前可见区域的行高
+                visible_row_start = self.table.rowAt(self.table.viewport().y())
+                visible_row_end = self.table.rowAt(self.table.viewport().y() + self.table.viewport().height())
+                if visible_row_end == -1:  # 如果没有行在底部，设置为最后一行
+                    visible_row_end = self.table.rowCount() - 1
+                
+                # 只调整可见区域的行高
+                for row in range(visible_row_start, visible_row_end + 1):
+                    self.table.resizeRowToContents(row)
+                
+                # 设置一个定时器，在用户滚动时动态调整行高
+                if hasattr(self, '_row_height_timer'):
+                    self._row_height_timer.stop()
+                
+                self._row_height_timer = self.table.verticalScrollBar().valueChanged.connect(
+                    lambda: self._adjust_visible_rows_height()
+                )
+            else:
+                # 对于小型表格，调整所有行高
+                for row in range(rows):
+                    self.table.resizeRowToContents(row)
             
             # 设置列宽为Stretch模式，确保列宽适应窗口
             header = self.table.horizontalHeader()
@@ -618,12 +655,35 @@ class MainWindow(QMainWindow):
             self.table.setRowCount(0)
             self.table.setColumnCount(0)
     
+    def _adjust_visible_rows_height(self):
+        """调整当前可见区域的行高"""
+        visible_row_start = self.table.rowAt(self.table.viewport().y())
+        visible_row_end = self.table.rowAt(self.table.viewport().y() + self.table.viewport().height())
+        if visible_row_end == -1:  # 如果没有行在底部，设置为最后一行
+            visible_row_end = self.table.rowCount() - 1
+        
+        # 只调整可见区域的行高
+        for row in range(visible_row_start, visible_row_end + 1):
+            self.table.resizeRowToContents(row)
+    
     def get_table(self):
         """获取表格控件"""
         return self.table
     
+    def refresh_table(self):
+        """刷新当前表格数据"""
+        if self.controller.current_table_id is not None:
+            # 强制从磁盘刷新数据
+            if self.controller.refresh_from_disk():
+                self.update_table()
+                self.statusBar().showMessage(f"已刷新表格: {self.controller.current_table_name}", 3000)
+            else:
+                QMessageBox.warning(self, "错误", f"无法刷新表格: {self.controller.current_table_name}")
+        else:
+            QMessageBox.information(self, "提示", "没有打开的表格可刷新")
+    
     def on_paste(self):
-        """粘贴事件处理"""
+        """粘贴事件处理 - 优化版本，支持大量数据粘贴"""
         clipboard = QApplication.clipboard()
         text = clipboard.text()
         
@@ -661,22 +721,56 @@ class MainWindow(QMainWindow):
             cols = row.split('\t')
             paste_data.append(cols)
         
-        # 确保表格有足够的行和列
-        max_rows = current_row + len(paste_data)
-        max_cols = current_col + max(len(row) for row in paste_data) if paste_data else 0
+        # 开始批量更新模式，暂停磁盘同步
+        self.controller.start_batch_update()
         
-        if max_rows > self.table.rowCount():
-            self.table.setRowCount(max_rows)
-        
-        if max_cols > self.table.columnCount():
-            self.table.setColumnCount(max_cols)
-        
-        # 将数据粘贴到表格中
-        for i, row_data in enumerate(paste_data):
-            for j, cell_data in enumerate(row_data):
-                row = current_row + i
-                col = current_col + j
-                
+        try:
+            # 确保表格有足够的行和列
+            max_rows = current_row + len(paste_data)
+            max_cols = current_col + max(len(row) for row in paste_data) if paste_data else 0
+            
+            # 检查并扩展数据管理器的行数和列数
+            current_data_rows = self.controller.get_row_count()
+            current_data_cols = self.controller.get_column_count()
+            
+            # 如果需要更多行，一次性添加所有需要的行到数据管理器
+            if max_rows > current_data_rows:
+                rows_to_add = max_rows - current_data_rows
+                # 直接操作数据管理器，避免逐行添加的开销
+                data = self.controller.data_manager.get_data()
+                for _ in range(rows_to_add):
+                    data.append([''] * current_data_cols)
+                self.controller.data_manager.set_data(data)
+            
+            # 如果需要更多列，一次性添加所有需要的列到数据管理器
+            if max_cols > current_data_cols:
+                cols_to_add = max_cols - current_data_cols
+                # 直接操作数据管理器，避免逐列添加的开销
+                data = self.controller.data_manager.get_data()
+                for row in data:
+                    row.extend([''] * cols_to_add)
+                self.controller.data_manager.set_data(data)
+            
+            # 确保UI表格也有足够的行和列
+            if max_rows > self.table.rowCount():
+                self.table.setRowCount(max_rows)
+            
+            if max_cols > self.table.columnCount():
+                self.table.setColumnCount(max_cols)
+            
+            # 暂时禁用表格更新以提高性能
+            self.table.setUpdatesEnabled(False)
+            
+            # 批量设置数据到表格中
+            items_to_set = []
+            for i, row_data in enumerate(paste_data):
+                for j, cell_data in enumerate(row_data):
+                    row = current_row + i
+                    col = current_col + j
+                    items_to_set.append((row, col, cell_data))
+            
+            # 批量创建和设置单元格项
+            for row, col, cell_data in items_to_set:
                 # 获取或创建单元格项
                 item = self.table.item(row, col)
                 if not item:
@@ -685,19 +779,37 @@ class MainWindow(QMainWindow):
                 
                 # 设置单元格文本
                 item.setText(cell_data)
-                # 通知控制器数据已更改
-                self.controller.set_cell_data(row, col, cell_data)
-        
-        # 自动调整行高
-        for row in range(current_row, current_row + len(paste_data)):
-            self.table.resizeRowToContents(row)
-        
-        # 设置所有列为Stretch模式，确保列宽适应窗口
-        header = self.table.horizontalHeader()
-        for col in range(self.table.columnCount()):
-            header.setSectionResizeMode(col, header.Stretch)
-        
-        self.statusBar().showMessage(f"已粘贴 {len(paste_data)} 行数据")
+            
+            # 批量更新数据管理器中的数据
+            data = self.controller.data_manager.get_data()
+            for row, col, cell_data in items_to_set:
+                data[row][col] = cell_data
+            
+            # 一次性更新数据管理器，避免频繁同步到磁盘
+            self.controller.data_manager.set_data(data)
+            
+            # 重新启用表格更新
+            self.table.setUpdatesEnabled(True)
+            
+            # 只对粘贴的行进行行高调整，且只调整可见区域
+            visible_row_start = self.table.rowAt(self.table.viewport().y())
+            visible_row_end = self.table.rowAt(self.table.viewport().y() + self.table.viewport().height())
+            if visible_row_end == -1:  # 如果没有行在底部，设置为最后一行
+                visible_row_end = self.table.rowCount() - 1
+            
+            # 只调整可见区域的行高
+            for row in range(max(current_row, visible_row_start), min(current_row + len(paste_data), visible_row_end + 1)):
+                self.table.resizeRowToContents(row)
+            
+            # 设置所有列为Stretch模式，确保列宽适应窗口
+            header = self.table.horizontalHeader()
+            for col in range(self.table.columnCount()):
+                header.setSectionResizeMode(col, header.Stretch)
+            
+            self.statusBar().showMessage(f"已粘贴 {len(paste_data)} 行数据")
+        finally:
+            # 结束批量更新模式，同步所有待处理的更改到磁盘
+            self.controller.end_batch_update()
     
     def on_font_settings(self):
         """字体设置事件处理"""

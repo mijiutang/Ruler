@@ -41,9 +41,17 @@ class CSVTableController:
         """获取表格数据"""
         return self.data_manager.get_data()
     
+    def start_batch_update(self):
+        """开始批量更新模式，暂停磁盘同步"""
+        self.data_manager.start_batch_update()
+    
+    def end_batch_update(self):
+        """结束批量更新模式，同步所有待处理的更改到磁盘"""
+        self.data_manager.end_batch_update()
+    
     def set_cell_data(self, row, col, value):
         """
-        设置单元格数据，并实时同步到CSV文件
+        设置单元格数据
         
         Args:
             row (int): 行索引
@@ -54,48 +62,33 @@ class CSVTableController:
         if old_value != value:
             self.data_manager.set_cell_data(row, col, value)
             self.is_modified = True
-            # 实时同步到CSV文件
-            if self.data_manager.current_file_path:
-                try:
-                    self.data_manager.save_to_csv(overwrite=True)
-                except Exception as e:
-                    print(f"实时同步失败: {e}")
+            # 数据管理器已实现实时同步，无需额外操作
     
     def add_row(self, position=None):
         """
-        添加新行，并实时同步到CSV文件
+        添加新行
         
         Args:
             position (int, optional): 添加位置，默认在末尾添加
         """
         self.data_manager.add_row(position)
         self.is_modified = True
-        # 实时同步到CSV文件
-        if self.data_manager.current_file_path:
-            try:
-                self.data_manager.save_to_csv(overwrite=True)
-            except Exception as e:
-                print(f"实时同步失败: {e}")
+        # 数据管理器已实现实时同步，无需额外操作
     
     def add_column(self, position=None):
         """
-        添加新列，并实时同步到CSV文件
+        添加新列
         
         Args:
             position (int, optional): 添加位置，默认在末尾添加
         """
         self.data_manager.add_column(position)
         self.is_modified = True
-        # 实时同步到CSV文件
-        if self.data_manager.current_file_path:
-            try:
-                self.data_manager.save_to_csv(overwrite=True)
-            except Exception as e:
-                print(f"实时同步失败: {e}")
+        # 数据管理器已实现实时同步，无需额外操作
     
     def delete_row(self, position):
         """
-        删除指定行，并实时同步到CSV文件
+        删除指定行
         
         Args:
             position (int): 要删除的行索引
@@ -106,17 +99,12 @@ class CSVTableController:
         result = self.data_manager.delete_row(position)
         if result:
             self.is_modified = True
-            # 实时同步到CSV文件
-            if self.data_manager.current_file_path:
-                try:
-                    self.data_manager.save_to_csv(overwrite=True)
-                except Exception as e:
-                    print(f"实时同步失败: {e}")
+            # 数据管理器已实现实时同步，无需额外操作
         return result
     
     def delete_column(self, position):
         """
-        删除指定列，并实时同步到CSV文件
+        删除指定列
         
         Args:
             position (int): 要删除的列索引
@@ -127,12 +115,7 @@ class CSVTableController:
         result = self.data_manager.delete_column(position)
         if result:
             self.is_modified = True
-            # 实时同步到CSV文件
-            if self.data_manager.current_file_path:
-                try:
-                    self.data_manager.save_to_csv(overwrite=True)
-                except Exception as e:
-                    print(f"实时同步失败: {e}")
+            # 数据管理器已实现实时同步，无需额外操作
         return result
     
     def get_row_count(self):
@@ -143,26 +126,22 @@ class CSVTableController:
         """获取列数"""
         return self.data_manager.get_column_count()
     
-    def new_table(self, rows=10, cols=10):
+    def new_table(self, rows=10, cols=4, table_name=None):
         """
-        创建新表格，并实时同步到CSV文件
+        创建新表格
         
         Args:
             rows (int): 行数，默认为10
-            cols (int): 列数，默认为10
+            cols (int): 列数，默认为4
+            table_name (str, optional): 表格名称，如果未提供则使用默认名称
         """
-        self.data_manager.new_table(rows, cols)
+        self.data_manager.new_table(rows, cols, table_name)
         self.is_modified = False
-        # 实时同步到CSV文件
-        if self.data_manager.current_file_path:
-            try:
-                self.data_manager.save_to_csv(overwrite=True)
-            except Exception as e:
-                print(f"实时同步失败: {e}")
+        # 数据管理器已实现实时同步，无需额外操作
     
     def save_table(self):
         """
-        保存当前表格（仅更新UI，不实际保存文件）
+        保存当前表格
         
         Returns:
             str: 表格名称
@@ -170,17 +149,17 @@ class CSVTableController:
         # 如果没有当前文件路径，则生成一个默认名称
         if not self.data_manager.current_table_name:
             # 生成默认名称
-            default_name = f"表格_{self.data_manager.rows}x{self.data_manager.cols}"
+            default_name = f"表格_{self.data_manager.rows}×{self.data_manager.cols}"
             self.data_manager.current_table_name = default_name
         
-        # 不实际保存文件，只返回表格名称
-        result = self.data_manager.current_table_name
+        # 实际保存文件
+        result = self.data_manager.save_to_csv(overwrite=True)
         self.is_modified = False
-        return result
+        return self.data_manager.current_table_name
     
     def save_table_as(self, table_name):
         """
-        另存为表格（仅更新UI，不实际保存文件）
+        另存为表格
         
         Args:
             table_name (str): 表格名称
@@ -188,26 +167,42 @@ class CSVTableController:
         Returns:
             str: 表格名称
         """
-        # 不实际保存文件，只更新表格名称
-        self.data_manager.current_table_name = table_name
-        result = table_name
+        # 实际保存文件
+        result = self.data_manager.save_to_csv(table_name, overwrite=False)
         self.is_modified = False
-        return result
+        return table_name
     
-    def load_table(self, file_path):
+    def load_table(self, table_id):
         """
-        从CSV文件加载表格，并建立实时同步
+        加载表格 - 内存优化版本
         
         Args:
-            file_path (str): CSV文件路径
+            table_id: 可以是表格ID(int)或文件路径(str)
             
         Returns:
             bool: 加载是否成功
         """
-        result = self.data_manager.load_from_csv(file_path)
-        if result:
-            self.is_modified = False
-        return result
+        if isinstance(table_id, int):
+            # 通过ID加载表格
+            table_info = self.data_manager.get_table_info_by_id(table_id)
+            if not table_info:
+                return False
+            
+            file_path = table_info['file_path']
+            table_name = table_info['name']
+        else:
+            # 通过文件路径加载表格
+            file_path = table_id
+            table_name = os.path.basename(file_path)
+        
+        # 加载表格数据
+        if self.data_manager.load_from_csv(file_path):
+            self.current_table_id = table_id
+            self.current_table_name = table_name
+            self.is_modified = False  # 重置修改状态
+            return True
+        
+        return False
     
     def get_all_tables(self):
         """
@@ -261,6 +256,10 @@ class CSVTableController:
             info = self.data_manager.get_current_table_info()
         info['is_modified'] = self.is_modified
         return info
+    
+    def refresh_from_disk(self):
+        """强制从磁盘刷新数据，使内存缓存无效"""
+        return self.data_manager.refresh_from_disk()
     
     def _update_ui(self):
         """更新UI显示"""
