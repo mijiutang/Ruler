@@ -135,6 +135,53 @@ class ConfigManager:
             "y": int(y) if y else None
         }
     
+    def save_dock_state(self, dock_state):
+        """
+        保存停靠窗口状态
+        
+        Args:
+            dock_state: 停靠窗口状态(QByteArray)
+        """
+        # 将QByteArray转换为Base64编码的字符串，以便JSON序列化
+        import base64
+        dock_state_str = base64.b64encode(dock_state).decode('utf-8')
+        
+        # 使用QSettings保存
+        self.settings.setValue("dock_state", dock_state_str)
+        
+        # 同时保存到JSON文件作为备份
+        config = self.load_config()
+        config["dock_state"] = dock_state_str
+        self._save_config_to_file(config)
+    
+    def load_dock_state(self):
+        """
+        加载停靠窗口状态
+        
+        Returns:
+            QByteArray: 停停窗口状态
+        """
+        # 从QSettings加载
+        dock_state_str = self.settings.value("dock_state", "")
+        
+        # 如果QSettings中没有，尝试从JSON文件加载
+        if not dock_state_str:
+            config = self.load_config()
+            dock_state_str = config.get("dock_state", "")
+        
+        # 如果有保存的状态，将Base64字符串解码为QByteArray
+        if dock_state_str:
+            try:
+                import base64
+                from PyQt5.QtCore import QByteArray
+                dock_state_bytes = base64.b64decode(dock_state_str)
+                return QByteArray(dock_state_bytes)
+            except Exception as e:
+                print(f"加载停靠窗口状态失败: {e}")
+                return None
+        
+        return None
+    
     def _save_config_to_file(self, config):
         """
         保存配置到文件

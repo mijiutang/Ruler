@@ -10,16 +10,305 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                             QAction, QMessageBox, QToolBar, QStatusBar, 
                             QInputDialog, QTableWidgetItem, QFileDialog, 
                             QDialog, QListWidget, QDialogButtonBox, QLabel, QApplication, QTextEdit, QStyledItemDelegate, QDockWidget)
-from PyQt5.QtCore import Qt, QEvent, QSize
-from PyQt5.QtGui import QKeySequence, QClipboard
+from PyQt5.QtCore import Qt, QEvent, QSize, pyqtSignal
+from PyQt5.QtGui import QKeySequence, QClipboard, QColor, QTextCursor
 import csv
 import os
+import json
 
 # 导入表浏览器
 from ui.table_browser import TableBrowser
 
 # 导入配置管理器
 from utils.config_manager import ConfigManager
+
+class CommentManager:
+    """单元格批注管理类"""
+    
+    def __init__(self, file_path=None):
+        """
+        初始化批注管理器
+        
+        Args:
+            file_path (str): 表格文件路径，用于生成批注文件路径，可以为None
+        """
+        self.base_file_path = file_path
+        self.comments_file = self._get_comments_file_path()
+        self.comments = {}
+        if file_path:
+            self.load_comments()
+    
+    def _get_comments_file_path(self):
+        """获取批注文件路径"""
+        # 如果有表格文件路径，则在其同目录下创建同名.json文件
+        if self.base_file_path:
+            base_dir = os.path.dirname(self.base_file_path)
+            base_name = os.path.splitext(os.path.basename(self.base_file_path))[0]
+            return os.path.join(base_dir, f"{base_name}_comments.json")
+        # 否则使用默认路径
+        return os.path.join(os.getcwd(), "default_comments.json")
+    
+    def _get_cell_key(self, row, col):
+        """获取单元格键名"""
+        return f"({row+1}:{col+1})"
+    
+    def load_comments(self, file_path=None):
+        """从文件加载批注
+        
+        Args:
+            file_path (str): 表格文件路径，如果提供则更新当前文件路径
+        """
+        if file_path:
+            self.base_file_path = file_path
+            self.comments_file = self._get_comments_file_path()
+            
+        try:
+            if os.path.exists(self.comments_file):
+                with open(self.comments_file, 'r', encoding='utf-8') as f:
+                    loaded_comments = json.load(f)
+                    
+                # 兼容旧格式："单元格(行:列)" -> "(行:列)"
+                self.comments = {}
+                for key, value in loaded_comments.items():
+                    if key.startswith("单元格("):
+                        # 旧格式，转换为新格式
+                        new_key = key.replace("单元格", "")
+                        self.comments[new_key] = value
+                    else:
+                        # 新格式，直接使用
+                        self.comments[key] = value
+            else:
+                self.comments = {}
+        except Exception as e:
+            print(f"加载批注文件失败: {e}")
+            self.comments = {}
+    
+    def save_comments(self):
+        """保存批注到文件"""
+        try:
+            if not self.comments_file:
+                return False
+                
+            os.makedirs(os.path.dirname(self.comments_file), exist_ok=True)
+            with open(self.comments_file, 'w', encoding='utf-8') as f:
+                json.dump(self.comments, f, ensure_ascii=False, indent=2)
+            return True
+        except Exception as e:
+            print(f"保存批注文件失败: {e}")
+            return False
+    
+    def get_comment(self, row, col):
+        """
+        获取单元格批注
+        
+        Args:
+            row (int): 行索引
+            col (int): 列索引
+            
+        Returns:
+            str: 批注内容，如果没有批注则返回空字符串
+        """
+        cell_key = self._get_cell_key(row, col)
+        return self.comments.get(cell_key, "")
+    
+    def set_comment(self, row, col, comment):
+        """
+        设置单元格批注
+        
+        Args:
+            row (int): 行索引
+            col (int): 列索引
+            comment (str): 批注内容，如果为空字符串则删除批注
+        """
+        cell_key = self._get_cell_key(row, col)
+        
+        if comment and comment.strip():
+            self.comments[cell_key] = comment.strip()
+        else:
+            # 如果批注为空，则删除该批注
+            self.comments.pop(cell_key, None)
+        
+        return self.save_comments()
+    
+    def has_comment(self, row, col):
+        """
+        检查单元格是否有批注
+        
+        Args:
+            row (int): 行索引
+            col (int): 列索引
+            
+        Returns:
+            bool: 是否有批注
+        """
+        cell_key = self._get_cell_key(row, col)
+        return cell_key in self.comments and bool(self.comments[cell_key].strip())
+    
+    def get_all_comments(self):
+        """获取所有批注"""
+        return self.comments.copy()
+
+class CommentDockWidget(QDockWidget):
+    """批注停靠窗口类"""
+    
+    # 定义信号
+    comment_updated = pyqtSignal(int, int, str)  # 行, 列, 批注内容
+    
+    def __init__(self, parent=None):
+        """
+        初始化批注停靠窗口
+        
+        Args:
+            parent: 父窗口
+        """
+        super().__init__("单元格批注", parent)
+        self.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self.current_cell = None  # 当前选中的单元格 (row, col)
+        self.comment_manager = None  # 批注管理器
+        
+        # 创建界面
+        self.init_ui()
+    
+    def init_ui(self):
+        """初始化用户界面"""
+        # 创建主部件
+        main_widget = QWidget()
+        layout = QVBoxLayout(main_widget)
+        
+        # 批注编辑器
+        self.comment_edit = QTextEdit()
+        self.comment_edit.setPlaceholderText("在此输入批注内容...")
+        layout.addWidget(self.comment_edit)
+        
+        # 按钮布局
+        button_layout = QHBoxLayout()
+        
+        # 保存按钮
+        self.save_button = QPushButton("保存批注")
+        self.save_button.clicked.connect(self.save_comment)
+        button_layout.addWidget(self.save_button)
+        
+        # 删除按钮
+        self.delete_button = QPushButton("删除批注")
+        self.delete_button.clicked.connect(self.delete_comment)
+        button_layout.addWidget(self.delete_button)
+        
+        layout.addLayout(button_layout)
+        
+        # 设置主部件
+        self.setWidget(main_widget)
+        
+        # 初始状态下禁用编辑器
+        self.comment_edit.setEnabled(False)
+        self.save_button.setEnabled(False)
+        self.delete_button.setEnabled(False)
+    
+    def set_comment_manager(self, comment_manager):
+        """
+        设置批注管理器
+        
+        Args:
+            comment_manager (CommentManager): 批注管理器实例
+        """
+        self.comment_manager = comment_manager
+    
+    def set_current_cell(self, row, col):
+        """
+        设置当前选中的单元格
+        
+        Args:
+            row (int): 行索引
+            col (int): 列索引
+        """
+        self.current_cell = (row, col)
+        
+        # 启用编辑器
+        self.comment_edit.setEnabled(True)
+        self.save_button.setEnabled(True)
+        self.delete_button.setEnabled(True)
+        
+        # 加载当前单元格的批注
+        if self.comment_manager:
+            comment = self.comment_manager.get_comment(row, col)
+            self.comment_edit.setPlainText(comment)
+        else:
+            self.comment_edit.clear()
+    
+    def clear_current_cell(self):
+        """清除当前单元格"""
+        self.current_cell = None
+        self.comment_edit.clear()
+        
+        # 禁用编辑器
+        self.comment_edit.setEnabled(False)
+        self.save_button.setEnabled(False)
+        self.delete_button.setEnabled(False)
+    
+    def load_comment(self, row, col):
+        """
+        加载指定单元格的批注
+        
+        Args:
+            row (int): 行索引
+            col (int): 列索引
+        """
+        self.set_current_cell(row, col)
+    
+    def clear_display(self):
+        """清空显示"""
+        self.clear_current_cell()
+    
+    def save_comment(self):
+        """保存批注"""
+        if self.current_cell and self.comment_manager:
+            row, col = self.current_cell
+            comment = self.comment_edit.toPlainText()
+            
+            if self.comment_manager.set_comment(row, col, comment):
+                # 保存成功
+                # 获取主窗口并显示状态消息
+                main_window = self.parent()
+                while main_window and not isinstance(main_window, QMainWindow):
+                    main_window = main_window.parent()
+                
+                if main_window:
+                    main_window.statusBar().showMessage(f"已保存单元格({row+1}:{col+1})的批注", 3000)
+                
+                # 发出信号
+                self.comment_updated.emit(row, col, comment)
+            else:
+                # 保存失败
+                QMessageBox.warning(self, "保存失败", "无法保存批注，请检查文件权限。")
+    
+    def delete_comment(self):
+        """删除批注"""
+        if self.current_cell and self.comment_manager:
+            row, col = self.current_cell
+            
+            reply = QMessageBox.question(
+                self, "确认删除", 
+                f"确定要删除单元格({row+1}:{col+1})的批注吗？",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            
+            if reply == QMessageBox.Yes:
+                if self.comment_manager.set_comment(row, col, ""):
+                    # 删除成功
+                    self.comment_edit.clear()
+                    
+                    # 获取主窗口并显示状态消息
+                    main_window = self.parent()
+                    while main_window and not isinstance(main_window, QMainWindow):
+                        main_window = main_window.parent()
+                    
+                    if main_window:
+                        main_window.statusBar().showMessage(f"已删除单元格({row+1}:{col+1})的批注", 3000)
+                    
+                    # 发出信号
+                    self.comment_updated.emit(row, col, "")
+                else:
+                    # 删除失败
+                    QMessageBox.warning(self, "删除失败", "无法删除批注，请检查文件权限。")
 
 class CustomTextEdit(QTextEdit):
     """自定义文本编辑器，用于表格单元格编辑"""
@@ -90,6 +379,10 @@ class CustomTextEdit(QTextEdit):
         copy_to_first_col_action = menu.addAction("复制到首列")
         copy_to_first_col_action.triggered.connect(self.copy_to_first_column)
         
+        # 添加"剪切到下一行"动作
+        cut_to_next_row_action = menu.addAction("剪切到下一行")
+        cut_to_next_row_action.triggered.connect(self.cut_to_next_row)
+        
         # 显示菜单
         menu.exec_(event.globalPos())
     
@@ -145,6 +438,65 @@ class CustomTextEdit(QTextEdit):
                     main_window.statusBar().showMessage(f"已复制文本到第{self.row_index + 1}行首列的下一行", 3000)
                 else:
                     main_window.statusBar().showMessage(f"已复制文本到第{self.row_index + 1}行的首列", 3000)
+    
+    def cut_to_next_row(self):
+        """将光标后的文本剪切到下一行的单元格中，并创建新行"""
+        # 获取当前文本光标
+        cursor = self.textCursor()
+        
+        # 获取光标位置到文本末尾的内容
+        cursor.movePosition(QTextCursor.End, QTextCursor.KeepAnchor)
+        text_after_cursor = cursor.selectedText()
+        
+        if text_after_cursor and self.row_index is not None and self.col_index is not None:
+            # 获取父表格
+            table = self.parent().parent()
+            
+            # 获取当前单元格的全部文本
+            full_text = self.toPlainText()
+            
+            # 获取光标位置之前的内容（保留在原单元格）
+            cursor.movePosition(QTextCursor.Start)
+            cursor.movePosition(QTextCursor.End, QTextCursor.KeepAnchor)
+            cursor.setPosition(self.textCursor().position(), QTextCursor.KeepAnchor)
+            text_before_cursor = cursor.selectedText()
+            
+            # 更新当前单元格为光标前的内容
+            self.setPlainText(text_before_cursor)
+            
+            # 获取当前行和列
+            current_row = self.row_index
+            current_col = self.col_index
+            
+            # 在当前行之后插入新行
+            new_row_index = current_row + 1
+            table.insertRow(new_row_index)
+            
+            # 确保新行有足够的列
+            if table.columnCount() <= current_col:
+                table.setColumnCount(current_col + 1)
+            
+            # 创建新单元格项并设置文本
+            new_item = QTableWidgetItem(text_after_cursor)
+            table.setItem(new_row_index, current_col, new_item)
+            
+            # 获取主窗口
+            main_window = table.parent().parent()
+            
+            # 更新控制器中的数据
+            if hasattr(main_window, 'controller'):
+                # 更新当前单元格
+                main_window.controller.set_cell_data(current_row, current_col, text_before_cursor)
+                # 更新新单元格
+                main_window.controller.set_cell_data(new_row_index, current_col, text_after_cursor)
+            
+            # 调整行高以适应内容
+            table.resizeRowToContents(current_row)
+            table.resizeRowToContents(new_row_index)
+            
+            # 显示状态消息
+            if hasattr(main_window, 'statusBar'):
+                main_window.statusBar().showMessage(f"已将文本剪切到第{new_row_index + 1}行第{current_col + 1}列", 3000)
 
 
 class CustomTextEditDelegate(QStyledItemDelegate):
@@ -320,6 +672,16 @@ class MainWindow(QMainWindow):
         self.table.installEventFilter(self)
         # 初始化时禁用保存按钮
         self.update_save_button_state()
+        
+        # 延迟加载停靠窗口状态，确保所有停靠窗口都已创建
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(100, self.restore_dock_state)
+    
+    def restore_dock_state(self):
+        """恢复停靠窗口状态"""
+        dock_state = self.config_manager.load_dock_state()
+        if dock_state:
+            self.restoreState(dock_state)
     
     def eventFilter(self, obj, event):
         """事件过滤器，用于处理表格的键盘事件"""
@@ -392,9 +754,22 @@ class MainWindow(QMainWindow):
         # 创建表浏览器停靠窗口
         self.create_table_browser()
         
+        # 创建批注管理器
+        self.comment_manager = CommentManager()
+        
+        # 创建批注停靠窗口
+        self.create_comment_dock()
+        
         # 设置停靠窗口默认状态
         self.addDockWidget(Qt.RightDockWidgetArea, self.table_browser_dock)
         self.table_browser_dock.show()
+        
+        self.addDockWidget(Qt.RightDockWidgetArea, self.comment_widget)
+        self.comment_widget.show()
+        
+        # 设置停靠窗口选项卡式排列
+        self.tabifyDockWidget(self.table_browser_dock, self.comment_widget)
+        self.table_browser_dock.raise_()
         
         # 创建菜单栏
         self.create_menu_bar()
@@ -449,6 +824,7 @@ class MainWindow(QMainWindow):
     def create_toolbar(self):
         """创建工具栏"""
         toolbar = QToolBar()
+        toolbar.setObjectName("main_toolbar")
         self.addToolBar(toolbar)
         
         # 添加工具栏按钮
@@ -470,10 +846,78 @@ class MainWindow(QMainWindow):
         refresh_action.triggered.connect(self.refresh_table)
         toolbar.addAction(refresh_action)
     
+    def create_comment_dock(self):
+        """创建批注停靠窗口"""
+        # 直接创建批注停靠窗口实例（它本身就是QDockWidget）
+        self.comment_widget = CommentDockWidget(self)
+        self.comment_widget.setObjectName("comment_widget_dock")
+        
+        # 设置批注管理器
+        self.comment_widget.set_comment_manager(self.comment_manager)
+        
+        # 连接信号和槽
+        self.comment_widget.comment_updated.connect(self.on_comment_updated)
+        
+        # 连接表格选择变化信号
+        self.table.itemSelectionChanged.connect(self.on_table_selection_changed)
+    
+    def on_table_selection_changed(self):
+        """表格选择变化事件处理"""
+        # 获取当前选中的单元格
+        selected_items = self.table.selectedItems()
+        if selected_items:
+            item = selected_items[0]
+            row = item.row()
+            col = item.column()
+            
+            # 更新批注窗口显示当前单元格的批注
+            self.comment_widget.load_comment(row, col)
+            
+            # 加载当前表格的批注文件
+            if hasattr(self.controller, 'current_table_path') and self.controller.current_table_path:
+                self.comment_manager.load_comments(self.controller.current_table_path)
+        else:
+            # 没有选中单元格时，清空批注窗口
+            self.comment_widget.clear_display()
+    
+    def on_comment_updated(self, row, col, comment):
+        """批注更新事件处理"""
+        # 保存当前表格的批注文件
+        if hasattr(self.controller, 'current_table_path') and self.controller.current_table_path:
+            self.comment_manager.save_comments()
+        
+        # 更新状态栏
+        if comment:
+            self.statusBar().showMessage(f"已更新单元格({row+1}:{col+1})的批注")
+        else:
+            self.statusBar().showMessage(f"已删除单元格({row+1}:{col+1})的批注")
+        
+        # 标记有批注的单元格
+        self.update_comment_indicators()
+    
+    def update_comment_indicators(self):
+        """更新批注指示器"""
+        # 遍历所有单元格，为有批注的单元格添加背景色
+        for row in range(self.table.rowCount()):
+            for col in range(self.table.columnCount()):
+                comment = self.comment_manager.get_comment(row, col)
+                
+                # 获取单元格项
+                item = self.table.item(row, col)
+                if not item:
+                    item = QTableWidgetItem()
+                    self.table.setItem(row, col, item)
+                
+                # 如果有批注，设置浅黄色背景
+                if comment:
+                    item.setBackground(QColor(255, 255, 200))  # 浅黄色
+                else:
+                    # 恢复默认背景色
+                    item.setBackground(QColor(255, 255, 255))  # 白色
+    
     def create_table_browser(self):
-        """创建表浏览器停靠窗口"""
-        # 创建停靠窗口
         self.table_browser_dock = QDockWidget("表浏览器", self)
+        self.table_browser_dock.setObjectName("table_browser_dock")
         self.table_browser_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
         
         # 创建表浏览器实例
@@ -508,6 +952,12 @@ class MainWindow(QMainWindow):
             self.update_window_title()
             self.update_table()
             self.statusBar().showMessage(f"已加载表格: {table_info['name']}")
+            
+            # 加载对应的批注文件
+            if hasattr(self.controller, 'current_table_path') and self.controller.current_table_path:
+                self.comment_manager.load_comments(self.controller.current_table_path)
+                self.update_comment_indicators()
+            
             # 更新保存按钮状态
             self.update_save_button_state()
         else:
@@ -573,6 +1023,13 @@ class MainWindow(QMainWindow):
         self.toggle_dock_action.setChecked(True)  # 默认显示
         self.toggle_dock_action.triggered.connect(self.toggle_table_browser)
         view_menu.addAction(self.toggle_dock_action)
+        
+        # 批注窗口显示/隐藏选项
+        self.toggle_comment_dock_action = QAction("单元格批注", self)
+        self.toggle_comment_dock_action.setCheckable(True)
+        self.toggle_comment_dock_action.setChecked(True)  # 默认显示
+        self.toggle_comment_dock_action.triggered.connect(self.toggle_comment_dock)
+        view_menu.addAction(self.toggle_comment_dock_action)
         
         # 主题菜单
         theme_menu = menubar.addMenu("主题")
@@ -758,6 +1215,10 @@ class MainWindow(QMainWindow):
             header = self.table.horizontalHeader()
             for col in range(cols):
                 header.setSectionResizeMode(col, header.Stretch)
+                
+            # 更新批注指示器
+            if hasattr(self, 'comment_manager'):
+                self.update_comment_indicators()
         else:
             # 如果没有数据，清空表格
             self.table.clear()
@@ -957,6 +1418,15 @@ class MainWindow(QMainWindow):
             self.table_browser_dock.show()
             self.toggle_dock_action.setChecked(True)
     
+    def toggle_comment_dock(self):
+        """切换批注窗口显示/隐藏"""
+        if self.comment_widget.isVisible():
+            self.comment_widget.hide()
+            self.toggle_comment_dock_action.setChecked(False)
+        else:
+            self.comment_widget.show()
+            self.toggle_comment_dock_action.setChecked(True)
+    
     def closeEvent(self, event):
         """窗口关闭事件处理"""
         # 保存当前窗口大小和位置
@@ -967,6 +1437,10 @@ class MainWindow(QMainWindow):
             x=geometry.x(),
             y=geometry.y()
         )
+        
+        # 保存停靠窗口状态
+        dock_state = self.saveState()
+        self.config_manager.save_dock_state(dock_state)
         
         # 调用父类的关闭事件处理方法
         super().closeEvent(event)
