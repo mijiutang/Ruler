@@ -18,6 +18,9 @@ import os
 # 导入表浏览器
 from ui.table_browser import TableBrowser
 
+# 导入配置管理器
+from utils.config_manager import ConfigManager
+
 class CustomTextEdit(QTextEdit):
     """自定义文本编辑器，用于表格单元格编辑"""
     
@@ -28,6 +31,8 @@ class CustomTextEdit(QTextEdit):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)  # 需要时显示滚动条
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.setMinimumSize(100, 50)  # 设置最小尺寸
+        self.row_index = None  # 存储当前编辑的行索引
+        self.col_index = None  # 存储当前编辑的列索引
     
     def sizeHint(self):
         """返回推荐的编辑器大小"""
@@ -55,8 +60,91 @@ class CustomTextEdit(QTextEdit):
             self.insertPlainText('\n')
             return
         
+        # 如果按下Ctrl+Shift+C，执行复制到首列功能
+        if event.key() == Qt.Key_C and event.modifiers() == (Qt.ControlModifier | Qt.ShiftModifier):
+            self.copy_to_first_column()
+            return
+        
         # 其他按键交给父类处理
         super().keyPressEvent(event)
+    
+    def mousePressEvent(self, event):
+        """处理鼠标按键事件"""
+        # 检查是否是鼠标侧键（XButton1或XButton2）
+        if event.button() == Qt.XButton1 or event.button() == Qt.XButton2:
+            # 执行复制到首列功能
+            self.copy_to_first_column()
+            return
+        
+        super().mousePressEvent(event)
+    
+    def contextMenuEvent(self, event):
+        """处理右键菜单事件"""
+        # 获取默认的右键菜单
+        menu = self.createStandardContextMenu()
+        
+        # 添加分隔线
+        menu.addSeparator()
+        
+        # 添加"复制到首列"动作
+        copy_to_first_col_action = menu.addAction("复制到首列")
+        copy_to_first_col_action.triggered.connect(self.copy_to_first_column)
+        
+        # 显示菜单
+        menu.exec_(event.globalPos())
+    
+    def copy_to_first_column(self):
+        """复制选中文本到同行的第一列，如果该列已有内容则添加到下一行（换行）"""
+        # 获取选中的文本
+        selected_text = self.textCursor().selectedText()
+        
+        if not selected_text:
+            # 如果没有选中文本，获取全部文本
+            selected_text = self.toPlainText()
+        
+        if selected_text and self.row_index is not None:
+            # 获取父表格
+            table = self.parent().parent()
+            
+            # 确保第一列存在
+            if table.columnCount() < 1:
+                table.setColumnCount(1)
+            
+            # 获取或创建第一列的单元格项
+            first_col_item = table.item(self.row_index, 0)
+            if not first_col_item:
+                first_col_item = QTableWidgetItem()
+                table.setItem(self.row_index, 0, first_col_item)
+                # 设置为空，这样后续代码会直接添加文本
+                first_col_item.setText("")
+            
+            # 获取当前首列的内容
+            current_text = first_col_item.text()
+            
+            # 如果首列已有内容，添加换行符后再添加新文本
+            if current_text.strip():
+                new_text = current_text + "\n" + selected_text
+            else:
+                # 如果首列为空，直接添加文本
+                new_text = selected_text
+            
+            # 设置文本到第一列
+            first_col_item.setText(new_text)
+            
+            # 如果有控制器，也更新控制器中的数据
+            main_window = table.parent().parent()
+            if hasattr(main_window, 'controller'):
+                main_window.controller.set_cell_data(self.row_index, 0, new_text)
+            
+            # 调整行高以适应多行文本
+            table.resizeRowToContents(self.row_index)
+            
+            # 显示状态消息
+            if hasattr(main_window, 'statusBar'):
+                if current_text.strip():
+                    main_window.statusBar().showMessage(f"已复制文本到第{self.row_index + 1}行首列的下一行", 3000)
+                else:
+                    main_window.statusBar().showMessage(f"已复制文本到第{self.row_index + 1}行的首列", 3000)
 
 
 class CustomTextEditDelegate(QStyledItemDelegate):
@@ -69,6 +157,11 @@ class CustomTextEditDelegate(QStyledItemDelegate):
         """创建编辑器"""
         editor = CustomTextEdit(parent)
         editor.setFrameStyle(QTextEdit.NoFrame)  # 移除边框，使其看起来更自然
+        
+        # 设置行和列索引
+        editor.row_index = index.row()
+        editor.col_index = index.column()
+        
         return editor
     
     def setEditorData(self, editor, index):
@@ -202,10 +295,27 @@ class MainWindow(QMainWindow):
         self.controller = controller
         self.controller.set_main_window(self)
         self.save_action = None  # 保存动作引用
+        
+        # 初始化配置管理器
+        self.config_manager = ConfigManager()
+        
         self.init_ui()
         self.setup_connections()
         self.update_window_title()
         self.setup_table_properties()
+        
+        # 加载保存的主题
+        saved_theme = self.config_manager.load_theme()
+        self.change_theme(saved_theme)
+        
+        # 加载保存的窗口大小和位置
+        window_geometry = self.config_manager.load_window_geometry()
+        self.resize(window_geometry["width"], window_geometry["height"])
+        
+        # 如果有保存的位置，设置窗口位置
+        if window_geometry["x"] is not None and window_geometry["y"] is not None:
+            self.move(window_geometry["x"], window_geometry["y"])
+        
         # 安装事件过滤器以处理表格的键盘事件
         self.table.installEventFilter(self)
         # 初始化时禁用保存按钮
@@ -355,10 +465,6 @@ class MainWindow(QMainWindow):
         # 保存功能已废弃，不再添加到工具栏
         pass
         
-        load_action = QAction("加载", self)
-        load_action.triggered.connect(self.on_load)
-        toolbar.addAction(load_action)
-        
         # 刷新表格按钮
         refresh_action = QAction("刷新", self)
         refresh_action.triggered.connect(self.refresh_table)
@@ -434,10 +540,6 @@ class MainWindow(QMainWindow):
         # 保存和另存为功能已废弃，不再添加到文件菜单
         pass
         
-        load_action = QAction("加载", self)
-        load_action.triggered.connect(self.on_load)
-        file_menu.addAction(load_action)
-        
         file_menu.addSeparator()
         
         exit_action = QAction("退出", self)
@@ -471,6 +573,34 @@ class MainWindow(QMainWindow):
         self.toggle_dock_action.setChecked(True)  # 默认显示
         self.toggle_dock_action.triggered.connect(self.toggle_table_browser)
         view_menu.addAction(self.toggle_dock_action)
+        
+        # 主题菜单
+        theme_menu = menubar.addMenu("主题")
+        
+        # 默认白色主题
+        default_theme_action = QAction("默认白色", self)
+        default_theme_action.triggered.connect(lambda: self.change_theme("default"))
+        theme_menu.addAction(default_theme_action)
+        
+        # 桃粉主题
+        pink_theme_action = QAction("桃粉", self)
+        pink_theme_action.triggered.connect(lambda: self.change_theme("pink"))
+        theme_menu.addAction(pink_theme_action)
+        
+        # 淡紫主题
+        purple_theme_action = QAction("淡紫", self)
+        purple_theme_action.triggered.connect(lambda: self.change_theme("purple"))
+        theme_menu.addAction(purple_theme_action)
+        
+        # 草绿主题
+        green_theme_action = QAction("草绿", self)
+        green_theme_action.triggered.connect(lambda: self.change_theme("green"))
+        theme_menu.addAction(green_theme_action)
+        
+        # 天蓝主题
+        blue_theme_action = QAction("天蓝", self)
+        blue_theme_action.triggered.connect(lambda: self.change_theme("blue"))
+        theme_menu.addAction(blue_theme_action)
     
     def setup_connections(self):
         """设置信号和槽连接"""
@@ -547,25 +677,6 @@ class MainWindow(QMainWindow):
         """另存为表格（已废弃，保留空实现以避免程序崩溃）"""
         self.statusBar().showMessage("已禁用另存为功能，数据实时同步到CSV文件")
     
-    def on_load(self):
-        """加载表格"""
-        tables = self.controller.get_all_tables()
-        if not tables:
-            QMessageBox.information(self, "信息", "没有找到保存的表格")
-            return
-            
-        dialog = TableListDialog(tables, self)
-        if dialog.exec_() == QDialog.Accepted:
-            table_id = dialog.get_selected_table_id()
-            if table_id is not None:
-                success = self.controller.load_table(table_id)
-                if success:
-                    table_info = self.controller.get_current_table_info()
-                    self.update_window_title()
-                    self.statusBar().showMessage(f"已加载表格: {table_info['name']}")
-                else:
-                    QMessageBox.warning(self, "错误", "加载表格失败")
-    
     def on_resize_table(self):
         """自适应表格大小"""
         # 自适应所有行高
@@ -633,13 +744,11 @@ class MainWindow(QMainWindow):
                 for row in range(visible_row_start, visible_row_end + 1):
                     self.table.resizeRowToContents(row)
                 
-                # 设置一个定时器，在用户滚动时动态调整行高
-                if hasattr(self, '_row_height_timer'):
-                    self._row_height_timer.stop()
-                
-                self._row_height_timer = self.table.verticalScrollBar().valueChanged.connect(
-                    lambda: self._adjust_visible_rows_height()
-                )
+                # 设置滚动事件处理，在用户滚动时动态调整行高
+                if not hasattr(self, '_scroll_connection'):
+                    self._scroll_connection = self.table.verticalScrollBar().valueChanged.connect(
+                        self._adjust_visible_rows_height
+                    )
             else:
                 # 对于小型表格，调整所有行高
                 for row in range(rows):
@@ -656,7 +765,11 @@ class MainWindow(QMainWindow):
             self.table.setColumnCount(0)
     
     def _adjust_visible_rows_height(self):
-        """调整当前可见区域的行高"""
+        """调整当前可见区域的行高 - 优化版本"""
+        # 检查表格是否已初始化
+        if not hasattr(self, 'table') or self.table.rowCount() == 0:
+            return
+            
         visible_row_start = self.table.rowAt(self.table.viewport().y())
         visible_row_end = self.table.rowAt(self.table.viewport().y() + self.table.viewport().height())
         if visible_row_end == -1:  # 如果没有行在底部，设置为最后一行
@@ -846,5 +959,174 @@ class MainWindow(QMainWindow):
     
     def closeEvent(self, event):
         """窗口关闭事件处理"""
+        # 保存当前窗口大小和位置
+        geometry = self.geometry()
+        self.config_manager.save_window_geometry(
+            width=geometry.width(),
+            height=geometry.height(),
+            x=geometry.x(),
+            y=geometry.y()
+        )
+        
         # 调用父类的关闭事件处理方法
         super().closeEvent(event)
+    
+    def change_theme(self, theme_name):
+        """切换应用主题"""
+        # 定义不同主题的颜色方案
+        themes = {
+            "default": {
+                "background": "#ffffff",
+                "alternate": "#f9f9f9",
+                "grid": "#e0e0e0",
+                "text": "#000000",
+                "header": "#f0f0f0",
+                "selected_border": "#0078d7"
+            },
+            "pink": {
+                "background": "#fff5f5",
+                "alternate": "#ffe0e6",
+                "grid": "#ffb6c1",
+                "text": "#333333",
+                "header": "#ffccd5",
+                "selected_border": "#ff69b4"
+            },
+            "purple": {
+                "background": "#f8f5ff",
+                "alternate": "#ede6f5",
+                "grid": "#d8bfd8",
+                "text": "#333333",
+                "header": "#e6e0fa",
+                "selected_border": "#9370db"
+            },
+            "green": {
+                "background": "#f5fff5",
+                "alternate": "#e6ffe6",
+                "grid": "#90ee90",
+                "text": "#333333",
+                "header": "#d4ffd4",
+                "selected_border": "#32cd32"
+            },
+            "blue": {
+                "background": "#f5f9ff",
+                "alternate": "#e6f2ff",
+                "grid": "#add8e6",
+                "text": "#333333",
+                "header": "#d4e7ff",
+                "selected_border": "#4682b4"
+            }
+        }
+        
+        # 获取当前主题的颜色方案
+        if theme_name not in themes:
+            theme_name = "default"
+        colors = themes[theme_name]
+        
+        # 应用主题样式到整个应用程序
+        self.setStyleSheet(f"""
+            QMainWindow {{
+                background-color: {colors["background"]};
+            }}
+            
+            QTableWidget {{
+                background-color: {colors["background"]};
+                alternate-background-color: {colors["alternate"]};
+                gridline-color: {colors["grid"]};
+                color: {colors["text"]};
+                selection-background-color: transparent;
+                selection-color: {colors["text"]};
+            }}
+            
+            QTableWidget::item:selected {{
+                border: 2px solid {colors["selected_border"]};
+                background-color: transparent;
+            }}
+            
+            QTableWidget::item:focus {{
+                border: 2px solid {colors["selected_border"]};
+                background-color: transparent;
+            }}
+            
+            QTableWidget::item {{
+                padding: 5px;
+            }}
+            
+            QHeaderView::section {{
+                background-color: {colors["header"]};
+                color: {colors["text"]};
+                padding: 5px;
+                border: 1px solid {colors["grid"]};
+                font-weight: bold;
+            }}
+            
+            QMenuBar {{
+                background-color: {colors["header"]};
+                color: {colors["text"]};
+            }}
+            
+            QMenuBar::item {{
+                background-color: transparent;
+                padding: 5px 10px;
+            }}
+            
+            QMenuBar::item:selected {{
+                background-color: {colors["alternate"]};
+            }}
+            
+            QMenu {{
+                background-color: {colors["background"]};
+                color: {colors["text"]};
+                border: 1px solid {colors["grid"]};
+            }}
+            
+            QMenu::item:selected {{
+                background-color: {colors["alternate"]};
+            }}
+            
+            QToolBar {{
+                background-color: {colors["header"]};
+                border: 1px solid {colors["grid"]};
+            }}
+            
+            QStatusBar {{
+                background-color: {colors["header"]};
+                color: {colors["text"]};
+            }}
+            
+            QDockWidget {{
+                background-color: {colors["background"]};
+                color: {colors["text"]};
+                border: 1px solid {colors["grid"]};
+            }}
+            
+            QDockWidget::title {{
+                background-color: {colors["header"]};
+                padding: 5px;
+            }}
+            
+            QListWidget {{
+                background-color: {colors["background"]};
+                alternate-background-color: {colors["alternate"]};
+                color: {colors["text"]};
+                border: 1px solid {colors["grid"]};
+            }}
+            
+            QListWidget::item:selected {{
+                background-color: {colors["alternate"]};
+                color: {colors["text"]};
+            }}
+        """)
+        
+        # 保存当前主题设置
+        self.config_manager.save_theme(theme_name)
+        
+        # 更新状态栏消息
+        theme_names = {
+            "default": "默认白色",
+            "pink": "桃粉",
+            "purple": "淡紫",
+            "green": "草绿",
+            "blue": "天蓝"
+        }
+        
+        self.statusBar().showMessage(f"已切换到{theme_names.get(theme_name, '默认')}主题", 3000)
