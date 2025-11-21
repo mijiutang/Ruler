@@ -820,6 +820,9 @@ class MainWindow(QMainWindow):
         self.paste_action.setShortcut(QKeySequence.Paste)
         self.paste_action.triggered.connect(self.on_paste)
         self.addAction(self.paste_action)
+        
+        # 设置表头右键菜单
+        self.setup_header_context_menus()
     
     def create_toolbar(self):
         """创建工具栏"""
@@ -1604,3 +1607,111 @@ class MainWindow(QMainWindow):
         }
         
         self.statusBar().showMessage(f"已切换到{theme_names.get(theme_name, '默认')}主题", 3000)
+    
+    def setup_header_context_menus(self):
+        """设置表头右键菜单"""
+        # 设置垂直表头(行头)的上下文菜单策略
+        vertical_header = self.table.verticalHeader()
+        vertical_header.setContextMenuPolicy(Qt.CustomContextMenu)
+        vertical_header.customContextMenuRequested.connect(self.show_vertical_header_context_menu)
+        
+        # 设置水平表头(列头)的上下文菜单策略
+        horizontal_header = self.table.horizontalHeader()
+        horizontal_header.setContextMenuPolicy(Qt.CustomContextMenu)
+        horizontal_header.customContextMenuRequested.connect(self.show_horizontal_header_context_menu)
+    
+    def show_vertical_header_context_menu(self, pos):
+        """显示垂直表头(行头)右键菜单"""
+        # 获取点击的行索引
+        row = self.table.verticalHeader().logicalIndexAt(pos)
+        
+        # 创建上下文菜单
+        context_menu = QMenu(self)
+        
+        # 添加菜单项
+        insert_row_before_action = QAction("在此前插入1行", self)
+        insert_row_before_action.triggered.connect(lambda: self.insert_row_at_position(row))
+        context_menu.addAction(insert_row_before_action)
+        
+        insert_row_after_action = QAction("在此后插入1行", self)
+        insert_row_after_action.triggered.connect(lambda: self.insert_row_at_position(row + 1))
+        context_menu.addAction(insert_row_after_action)
+        
+        delete_row_action = QAction("删除此行", self)
+        delete_row_action.triggered.connect(lambda: self.delete_row_at_position(row))
+        context_menu.addAction(delete_row_action)
+        
+        # 显示菜单
+        context_menu.exec_(self.table.verticalHeader().viewport().mapToGlobal(pos))
+    
+    def show_horizontal_header_context_menu(self, pos):
+        """显示水平表头(列头)右键菜单"""
+        # 获取点击的列索引
+        col = self.table.horizontalHeader().logicalIndexAt(pos)
+        
+        # 创建上下文菜单
+        context_menu = QMenu(self)
+        
+        # 添加菜单项
+        insert_col_before_action = QAction("在此前插入1列", self)
+        insert_col_before_action.triggered.connect(lambda: self.insert_column_at_position(col))
+        context_menu.addAction(insert_col_before_action)
+        
+        insert_col_after_action = QAction("在此后插入1列", self)
+        insert_col_after_action.triggered.connect(lambda: self.insert_column_at_position(col + 1))
+        context_menu.addAction(insert_col_after_action)
+        
+        delete_col_action = QAction("删除此列", self)
+        delete_col_action.triggered.connect(lambda: self.delete_column_at_position(col))
+        context_menu.addAction(delete_col_action)
+        
+        # 显示菜单
+        context_menu.exec_(self.table.horizontalHeader().viewport().mapToGlobal(pos))
+    
+    def insert_row_at_position(self, row):
+        """在指定位置插入行"""
+        # 先操作UI
+        self.table.insertRow(row)
+        # 设置新行的高度
+        self.table.setRowHeight(row, 30)
+        # 调用控制器方法插入行
+        self.controller.add_row(row)
+        # 更新状态栏消息
+        self.statusBar().showMessage(f"已在第{row + 1}行前插入新行")
+    
+    def insert_column_at_position(self, col):
+        """在指定位置插入列"""
+        # 先操作UI
+        self.table.insertColumn(col)
+        # 设置新列的宽度
+        self.table.setColumnWidth(col, 100)
+        # 调用控制器方法插入列
+        self.controller.add_column(col)
+        # 更新状态栏消息
+        self.statusBar().showMessage(f"已在第{col + 1}列前插入新列")
+    
+    def delete_row_at_position(self, row):
+        """删除指定行"""
+        if self.table.rowCount() > 1:  # 确保至少保留一行
+            # 调用控制器方法删除行
+            result = self.controller.delete_row(row)
+            if result:
+                # 先操作UI
+                self.table.removeRow(row)
+                # 更新状态栏消息
+                self.statusBar().showMessage(f"已删除第{row + 1}行")
+        else:
+            QMessageBox.warning(self, "操作失败", "至少需要保留一行")
+    
+    def delete_column_at_position(self, col):
+        """删除指定列"""
+        if self.table.columnCount() > 1:  # 确保至少保留一列
+            # 调用控制器方法删除列
+            result = self.controller.delete_column(col)
+            if result:
+                # 先操作UI
+                self.table.removeColumn(col)
+                # 更新状态栏消息
+                self.statusBar().showMessage(f"已删除第{col + 1}列")
+        else:
+            QMessageBox.warning(self, "操作失败", "至少需要保留一列")
