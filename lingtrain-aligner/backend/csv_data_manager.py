@@ -39,6 +39,11 @@ class CSVTableDataManager:
         self._pending_changes = False
         # 内存优化：添加内存缓存标志，避免频繁磁盘读取
         self._memory_cache_valid = True
+        
+        # 优化同步机制：添加延迟同步功能
+        self._batch_update_mode = False
+        self._sync_timer_id = None
+        self._sync_delay = 1000  # 1秒后同步到磁盘
     
     def get_data(self):
         """获取表格数据，优先使用内存缓存"""
@@ -101,7 +106,7 @@ class CSVTableDataManager:
     
     def set_cell_data(self, row, col, value):
         """
-        设置指定单元格数据并立即同步到磁盘文件
+        设置指定单元格数据并延迟同步到磁盘文件
         
         Args:
             row (int): 行索引
@@ -112,28 +117,33 @@ class CSVTableDataManager:
         if 0 <= row < self.rows and 0 <= col < self.cols:
             self.data[row][col] = value
             
-            # 如果不是批量模式，立即同步到磁盘文件
-            if not self._batch_mode:
-                self._sync_to_disk()
-            else:
-                # 批量模式下，只标记有待处理的更改
-                self._pending_changes = True
+            # 如果不是批量更新模式，延迟同步到磁盘文件
+            if not self._batch_update_mode:
+                self._delayed_sync_to_disk()
     
     def start_batch_update(self):
         """开始批量更新模式，暂停磁盘同步"""
-        self._batch_mode = True
-        self._pending_changes = False
+        self._batch_update_mode = True
+        # 如果有待处理的同步定时器，取消它
+        if self._sync_timer_id is not None:
+            from PyQt5.QtCore import QTimer
+            # 这里我们不能直接取消定时器，但可以设置标志避免同步
+            self._sync_timer_id = None
     
-    def end_batch_update(self):
-        """结束批量更新模式，同步所有待处理的更改到磁盘"""
-        if self._batch_mode and self._pending_changes:
+    def end_batch_update(self, sync_to_disk=True):
+        """结束批量更新模式，同步所有待处理的更改到磁盘
+        
+        Args:
+            sync_to_disk (bool): 是否在结束时同步到磁盘，默认为True
+        """
+        self._batch_update_mode = False
+        if sync_to_disk:
+            # 立即同步到磁盘
             self._sync_to_disk()
-            self._pending_changes = False
-        self._batch_mode = False
     
     def add_row(self, position=None):
         """
-        添加新行并立即同步到磁盘文件
+        添加新行
         
         Args:
             position (int, optional): 添加位置，默认在末尾添加
@@ -148,12 +158,13 @@ class CSVTableDataManager:
             self.data.insert(position, ["" for _ in range(self.cols)])
             self.rows += 1
         
-        # 立即同步到磁盘文件
-        self._sync_to_disk()
+        # 只有在非批量更新模式下才延迟同步
+        if not self._batch_update_mode:
+            self._delayed_sync_to_disk()
     
     def add_column(self, position=None):
         """
-        添加新列并立即同步到磁盘文件
+        添加新列
         
         Args:
             position (int, optional): 添加位置，默认在末尾添加
@@ -170,12 +181,13 @@ class CSVTableDataManager:
                 row.insert(position, "")
             self.cols += 1
         
-        # 立即同步到磁盘文件
-        self._sync_to_disk()
+        # 只有在非批量更新模式下才延迟同步
+        if not self._batch_update_mode:
+            self._delayed_sync_to_disk()
     
     def delete_row(self, position):
         """
-        删除指定行并立即同步到磁盘文件
+        删除指定行
         
         Args:
             position (int): 要删除的行索引
@@ -191,14 +203,15 @@ class CSVTableDataManager:
             # 更新行数
             self.rows -= 1
             
-            # 立即同步到磁盘文件
-            self._sync_to_disk()
+            # 只有在非批量更新模式下才延迟同步
+            if not self._batch_update_mode:
+                self._delayed_sync_to_disk()
             return True
         return False
     
     def delete_column(self, position):
         """
-        删除指定列并立即同步到磁盘文件
+        删除指定列
         
         Args:
             position (int): 要删除的列索引
@@ -218,8 +231,9 @@ class CSVTableDataManager:
             # 更新列数
             self.cols -= 1
             
-            # 立即同步到磁盘文件
-            self._sync_to_disk()
+            # 只有在非批量更新模式下才延迟同步
+            if not self._batch_update_mode:
+                self._delayed_sync_to_disk()
             return True
         return False
     
@@ -246,6 +260,17 @@ class CSVTableDataManager:
         finally:
             # 释放同步锁
             self._sync_lock = False
+    
+    def _delayed_sync_to_disk(self):
+        """延迟同步数据到磁盘"""
+        # 如果已经有定时器在运行，先取消它
+        if self._sync_timer_id is not None:
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(0, lambda: None)  # 用于获取QTimer实例
+            
+        # 设置新的延迟同步定时器
+        from PyQt5.QtCore import QTimer
+        self._sync_timer_id = QTimer.singleShot(self._sync_delay, self._sync_to_disk)
     
     # CSV文件相关方法
     def save_to_csv(self, table_name=None, overwrite=False):

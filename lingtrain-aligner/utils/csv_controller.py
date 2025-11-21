@@ -7,6 +7,7 @@ CSV表格控制器模块
 """
 
 from backend.csv_data_manager import CSVTableDataManager
+from utils.command_history import CommandHistory
 import os
 
 class CSVTableController:
@@ -27,6 +28,7 @@ class CSVTableController:
             self.data_manager = CSVTableDataManager(rows, cols)
         self.is_modified = False  # 标记数据是否被修改
         self.main_window = None  # 添加主窗口引用
+        self.command_history = CommandHistory()  # 命令历史管理器
     
     def set_main_window(self, main_window):
         """
@@ -49,7 +51,7 @@ class CSVTableController:
         """结束批量更新模式，同步所有待处理的更改到磁盘"""
         self.data_manager.end_batch_update()
     
-    def set_cell_data(self, row, col, value):
+    def set_cell_data(self, row, col, value, use_command=True):
         """
         设置单元格数据
         
@@ -57,66 +59,103 @@ class CSVTableController:
             row (int): 行索引
             col (int): 列索引
             value (str): 单元格值
+            use_command (bool): 是否使用命令模式，默认为True
         """
         old_value = self.data_manager.get_cell_data(row, col)
         if old_value != value:
-            self.data_manager.set_cell_data(row, col, value)
-            self.is_modified = True
-            # 数据管理器已实现实时同步，无需额外操作
+            if use_command and self.main_window:
+                # 使用命令模式
+                from utils.table_commands import EditCellCommand
+                command = EditCellCommand(self.data_manager, row, col, value, old_value)
+                self.execute_command(command)
+            else:
+                # 直接设置数据
+                self.data_manager.set_cell_data(row, col, value)
+                self.is_modified = True
     
-    def add_row(self, position=None):
+    def add_row(self, position=None, use_command=True):
         """
         添加新行
         
         Args:
             position (int, optional): 添加位置，默认在末尾添加
+            use_command (bool): 是否使用命令模式，默认为True
         """
-        self.data_manager.add_row(position)
-        self.is_modified = True
-        # 数据管理器已实现实时同步，无需额外操作
+        if use_command and self.main_window:
+            # 使用命令模式
+            from utils.table_commands import InsertRowCommand
+            command = InsertRowCommand(self.data_manager, position)
+            self.execute_command(command)
+        else:
+            # 直接添加行
+            self.data_manager.add_row(position)
+            self.is_modified = True
     
-    def add_column(self, position=None):
+    def add_column(self, position=None, use_command=True):
         """
         添加新列
         
         Args:
             position (int, optional): 添加位置，默认在末尾添加
+            use_command (bool): 是否使用命令模式，默认为True
         """
-        self.data_manager.add_column(position)
-        self.is_modified = True
-        # 数据管理器已实现实时同步，无需额外操作
+        if use_command and self.main_window:
+            # 使用命令模式
+            from utils.table_commands import InsertColumnCommand
+            command = InsertColumnCommand(self.data_manager, position)
+            self.execute_command(command)
+        else:
+            # 直接添加列
+            self.data_manager.add_column(position)
+            self.is_modified = True
     
-    def delete_row(self, position):
+    def delete_row(self, position, use_command=True):
         """
         删除指定行
         
         Args:
             position (int): 要删除的行索引
+            use_command (bool): 是否使用命令模式，默认为True
             
         Returns:
             bool: 删除是否成功
         """
-        result = self.data_manager.delete_row(position)
-        if result:
-            self.is_modified = True
-            # 数据管理器已实现实时同步，无需额外操作
-        return result
+        if use_command and self.main_window:
+            # 使用命令模式
+            from utils.table_commands import DeleteRowCommand
+            command = DeleteRowCommand(self.data_manager, position)
+            self.execute_command(command)
+            return True
+        else:
+            # 直接删除行
+            result = self.data_manager.delete_row(position)
+            if result:
+                self.is_modified = True
+            return result
     
-    def delete_column(self, position):
+    def delete_column(self, position, use_command=True):
         """
         删除指定列
         
         Args:
             position (int): 要删除的列索引
+            use_command (bool): 是否使用命令模式，默认为True
             
         Returns:
             bool: 删除是否成功
         """
-        result = self.data_manager.delete_column(position)
-        if result:
-            self.is_modified = True
-            # 数据管理器已实现实时同步，无需额外操作
-        return result
+        if use_command and self.main_window:
+            # 使用命令模式
+            from utils.table_commands import DeleteColumnCommand
+            command = DeleteColumnCommand(self.data_manager, position)
+            self.execute_command(command)
+            return True
+        else:
+            # 直接删除列
+            result = self.data_manager.delete_column(position)
+            if result:
+                self.is_modified = True
+            return result
     
     def get_row_count(self):
         """获取行数"""
@@ -261,7 +300,94 @@ class CSVTableController:
         """强制从磁盘刷新数据，使内存缓存无效"""
         return self.data_manager.refresh_from_disk()
     
-    def _update_ui(self):
-        """更新UI显示"""
+    def _update_ui(self, changed_cells=None):
+        """更新UI"""
         if self.main_window:
-            self.main_window.update_table()
+            # 如果有变化的单元格，使用增量更新；否则使用完整更新
+            if changed_cells:
+                self.main_window.update_table(incremental=True, changed_cells=changed_cells)
+            else:
+                self.main_window.update_table()
+    
+    def undo(self):
+        """
+        撤回上一个操作
+        
+        Returns:
+            list: 变化的单元格列表，用于增量更新
+        """
+        # 执行撤回并获取变化的单元格
+        changed_cells = self.command_history.undo()
+        # 如果不在批量更新模式，更新UI
+        if not hasattr(self, '_batch_update_mode') or not self._batch_update_mode:
+            self._update_ui(changed_cells)
+        # 返回变化的单元格，用于增量更新
+        return changed_cells
+    
+    def redo(self):
+        """
+        重做上一个撤回的操作
+        
+        Returns:
+            list: 变化的单元格列表，用于增量更新
+        """
+        # 执行重做并获取变化的单元格
+        changed_cells = self.command_history.redo()
+        # 如果不在批量更新模式，更新UI
+        if not hasattr(self, '_batch_update_mode') or not self._batch_update_mode:
+            self._update_ui(changed_cells)
+        # 返回变化的单元格，用于增量更新
+        return changed_cells
+    
+    def can_undo(self):
+        """
+        检查是否可以撤回
+        
+        Returns:
+            bool: 是否可以撤回
+        """
+        return self.command_history.can_undo()
+    
+    def can_redo(self):
+        """
+        检查是否可以重做
+        
+        Returns:
+            bool: 是否可以重做
+        """
+        return self.command_history.can_redo()
+    
+    def execute_command(self, command):
+        """
+        执行命令并添加到历史记录
+        
+        Args:
+            command: 要执行的命令
+            
+        Returns:
+            list: 变化的单元格列表，用于增量更新
+        """
+        # 执行命令并获取变化的单元格
+        changed_cells = self.command_history.execute_command(command)
+        # 只有在非批量更新模式下才立即更新UI
+        if not hasattr(self, '_batch_update_mode') or not self._batch_update_mode:
+            self._update_ui(changed_cells)
+        self.is_modified = True
+        # 返回变化的单元格，用于增量更新
+        return changed_cells
+    
+    def start_batch_update(self):
+        """开始批量更新模式，暂停UI更新"""
+        self._batch_update_mode = True
+        self.data_manager.start_batch_update()
+    
+    def end_batch_update(self, update_ui=True):
+        """结束批量更新模式，恢复UI更新
+        
+        Args:
+            update_ui (bool): 是否在结束时更新UI，默认为True
+        """
+        self._batch_update_mode = False
+        self.data_manager.end_batch_update()
+        if update_ui:
+            self._update_ui()

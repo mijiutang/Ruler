@@ -687,6 +687,20 @@ class MainWindow(QMainWindow):
         """事件过滤器，用于处理表格的键盘事件"""
         # 检查事件是否来自表格并且是按键事件
         if obj == self.table and event.type() == QEvent.KeyPress:
+            # 检查是否按下了Ctrl+Z (撤回)
+            if event.key() == Qt.Key_Z and event.modifiers() == Qt.ControlModifier:
+                if self.controller.can_undo():
+                    self.controller.undo()
+                    self.statusBar().showMessage("已撤回操作")
+                return True  # 事件已被处理
+            
+            # 检查是否按下了Ctrl+Y (重做)
+            if event.key() == Qt.Key_Y and event.modifiers() == Qt.ControlModifier:
+                if self.controller.can_redo():
+                    self.controller.redo()
+                    self.statusBar().showMessage("已重做操作")
+                return True  # 事件已被处理
+            
             # 检查是否按下了Delete键
             if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
                 # 获取当前选中的单元格
@@ -1097,6 +1111,7 @@ class MainWindow(QMainWindow):
     def on_cell_changed(self, row, col):
         """单元格内容变化事件处理 - 优化版本，减少磁盘同步频率"""
         value = self.table.item(row, col).text() if self.table.item(row, col) else ""
+        # 使用命令模式设置单元格数据
         self.controller.set_cell_data(row, col, value)
         
         # 只对当前修改的行进行行高调整，而不是所有行
@@ -1166,67 +1181,84 @@ class MainWindow(QMainWindow):
             title += " *"
         self.setWindowTitle(title)
     
-    def update_table(self):
-        """更新表格显示 - 内存优化版本，支持大型表格"""
+    def update_table(self, incremental=False, changed_cells=None):
+        """
+        更新表格显示 - 内存优化版本，支持大型表格和增量更新
+        
+        Args:
+            incremental (bool): 是否为增量更新，默认为False
+            changed_cells (list): 增量更新时变化的单元格列表，格式为[(row, col), ...]
+        """
         data = self.controller.get_table_data()
         if data is not None:
             rows = len(data)
             cols = len(data[0]) if rows > 0 else 0
             
-            # 先清空表格
-            self.table.clear()
-            
-            # 重新设置行列数
-            self.table.setRowCount(rows)
-            self.table.setColumnCount(cols)
-            
-            # 暂时禁用表格更新以提高性能
-            self.table.setUpdatesEnabled(False)
-            
-            # 批量创建和设置单元格项
-            items = []
-            for i in range(rows):
-                for j in range(cols):
-                    item = QTableWidgetItem(str(data[i][j]))
-                    items.append((i, j, item))
-            
-            # 批量设置单元格项
-            for i, j, item in items:
-                self.table.setItem(i, j, item)
-            
-            # 重新启用表格更新
-            self.table.setUpdatesEnabled(True)
-            
-            # 对于大型表格，延迟调整行高以提高性能
-            if rows > 1000:
-                # 对于大型表格，只调整当前可见区域的行高
-                visible_row_start = self.table.rowAt(self.table.viewport().y())
-                visible_row_end = self.table.rowAt(self.table.viewport().y() + self.table.viewport().height())
-                if visible_row_end == -1:  # 如果没有行在底部，设置为最后一行
-                    visible_row_end = self.table.rowCount() - 1
-                
-                # 只调整可见区域的行高
-                for row in range(visible_row_start, visible_row_end + 1):
-                    self.table.resizeRowToContents(row)
-                
-                # 设置滚动事件处理，在用户滚动时动态调整行高
-                if not hasattr(self, '_scroll_connection'):
-                    self._scroll_connection = self.table.verticalScrollBar().valueChanged.connect(
-                        self._adjust_visible_rows_height
-                    )
+            if incremental and changed_cells:
+                # 增量更新模式，只更新变化的单元格
+                for row, col in changed_cells:
+                    if 0 <= row < rows and 0 <= col < cols:
+                        item = self.table.item(row, col)
+                        if item:
+                            item.setText(str(data[row][col]))
+                        else:
+                            self.table.setItem(row, col, QTableWidgetItem(str(data[row][col])))
             else:
-                # 对于小型表格，调整所有行高
-                for row in range(rows):
-                    self.table.resizeRowToContents(row)
-            
-            # 设置列宽为Stretch模式，确保列宽适应窗口
-            header = self.table.horizontalHeader()
-            for col in range(cols):
-                header.setSectionResizeMode(col, header.Stretch)
+                # 完整更新模式
+                # 先清空表格
+                self.table.clear()
                 
-            # 更新批注指示器
-            if hasattr(self, 'comment_manager'):
-                self.update_comment_indicators()
+                # 重新设置行列数
+                self.table.setRowCount(rows)
+                self.table.setColumnCount(cols)
+                
+                # 暂时禁用表格更新以提高性能
+                self.table.setUpdatesEnabled(False)
+                
+                # 批量创建和设置单元格项
+                items = []
+                for i in range(rows):
+                    for j in range(cols):
+                        item = QTableWidgetItem(str(data[i][j]))
+                        items.append((i, j, item))
+                
+                # 批量设置单元格项
+                for i, j, item in items:
+                    self.table.setItem(i, j, item)
+                
+                # 重新启用表格更新
+                self.table.setUpdatesEnabled(True)
+                
+                # 对于大型表格，延迟调整行高以提高性能
+                if rows > 1000:
+                    # 对于大型表格，只调整当前可见区域的行高
+                    visible_row_start = self.table.rowAt(self.table.viewport().y())
+                    visible_row_end = self.table.rowAt(self.table.viewport().y() + self.table.viewport().height())
+                    if visible_row_end == -1:  # 如果没有行在底部，设置为最后一行
+                        visible_row_end = self.table.rowCount() - 1
+                    
+                    # 只调整可见区域的行高
+                    for row in range(visible_row_start, visible_row_end + 1):
+                        self.table.resizeRowToContents(row)
+                    
+                    # 设置滚动事件处理，在用户滚动时动态调整行高
+                    if not hasattr(self, '_scroll_connection'):
+                        self._scroll_connection = self.table.verticalScrollBar().valueChanged.connect(
+                            self._adjust_visible_rows_height
+                        )
+                else:
+                    # 对于小型表格，调整所有行高
+                    for row in range(rows):
+                        self.table.resizeRowToContents(row)
+                
+                # 设置列宽为Stretch模式，确保列宽适应窗口
+                header = self.table.horizontalHeader()
+                for col in range(cols):
+                    header.setSectionResizeMode(col, header.Stretch)
+                    
+                # 更新批注指示器
+                if hasattr(self, 'comment_manager'):
+                    self.update_comment_indicators()
         else:
             # 如果没有数据，清空表格
             self.table.clear()
