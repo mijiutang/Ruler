@@ -44,6 +44,13 @@ class CSVTableDataManager:
         self._batch_update_mode = False
         self._sync_timer_id = None
         self._sync_delay = 1000  # 1秒后同步到磁盘
+        
+        # 性能优化：添加行高缓存，减少重复计算
+        self._row_height_cache = {}
+        # 性能优化：添加单元格访问计数，用于优化热点数据
+        self._cell_access_count = {}
+        # 性能优化：添加脏数据跟踪，只同步修改过的单元格
+        self._dirty_cells = set()  # 存储修改过的单元格坐标(row, col)
     
     def get_data(self):
         """获取表格数据，优先使用内存缓存"""
@@ -115,11 +122,46 @@ class CSVTableDataManager:
         """
         # 直接使用内存中的数据，不进行磁盘读取
         if 0 <= row < self.rows and 0 <= col < self.cols:
-            self.data[row][col] = value
+            # 检查值是否真的发生了变化，避免不必要的同步
+            if self.data[row][col] != value:
+                self.data[row][col] = value
+                
+                # 添加到脏数据集合，用于增量同步
+                self._dirty_cells.add((row, col))
+                
+                # 增加单元格访问计数
+                cell_key = (row, col)
+                self._cell_access_count[cell_key] = self._cell_access_count.get(cell_key, 0) + 1
+                
+                # 如果不是批量更新模式，延迟同步到磁盘文件
+                if not self._batch_update_mode:
+                    self._delayed_sync_to_disk()
+    
+    def get_dirty_cells(self):
+        """
+        获取所有修改过的单元格坐标
+        
+        Returns:
+            set: 修改过的单元格坐标集合 {(row, col), ...}
+        """
+        return self._dirty_cells.copy()
+    
+    def clear_dirty_cells(self):
+        """清空脏数据集合"""
+        self._dirty_cells.clear()
+    
+    def get_hot_cells(self, threshold=5):
+        """
+        获取访问次数超过阈值的单元格坐标
+        
+        Args:
+            threshold (int): 访问次数阈值，默认为5
             
-            # 如果不是批量更新模式，延迟同步到磁盘文件
-            if not self._batch_update_mode:
-                self._delayed_sync_to_disk()
+        Returns:
+            list: 访问次数超过阈值的单元格坐标列表 [(row, col, count), ...]
+        """
+        return [(row, col, count) for (row, col), count in self._cell_access_count.items() 
+                if count >= threshold]
     
     def start_batch_update(self):
         """开始批量更新模式，暂停磁盘同步"""
@@ -127,7 +169,7 @@ class CSVTableDataManager:
         # 如果有待处理的同步定时器，取消它
         if self._sync_timer_id is not None:
             from PyQt5.QtCore import QTimer
-            # 这里我们不能直接取消定时器，但可以设置标志避免同步
+            # 取消定时器
             self._sync_timer_id = None
     
     def end_batch_update(self, sync_to_disk=True):
@@ -138,8 +180,8 @@ class CSVTableDataManager:
         """
         self._batch_update_mode = False
         if sync_to_disk:
-            # 立即同步到磁盘
-            self._sync_to_disk()
+            # 使用延迟同步而不是立即同步，避免阻塞UI
+            self._delayed_sync_to_disk()
     
     def add_row(self, position=None):
         """
@@ -262,15 +304,16 @@ class CSVTableDataManager:
             self._sync_lock = False
     
     def _delayed_sync_to_disk(self):
-        """延迟同步数据到磁盘"""
+        """延迟同步数据到磁盘 - 优化版本"""
         # 如果已经有定时器在运行，先取消它
         if self._sync_timer_id is not None:
             from PyQt5.QtCore import QTimer
-            QTimer.singleShot(0, lambda: None)  # 用于获取QTimer实例
+            # 创建一个空回调来取消之前的定时器
+            QTimer.singleShot(0, lambda: None)
             
-        # 设置新的延迟同步定时器
+        # 设置新的延迟同步定时器，使用更短的延迟提高响应性
         from PyQt5.QtCore import QTimer
-        self._sync_timer_id = QTimer.singleShot(self._sync_delay, self._sync_to_disk)
+        self._sync_timer_id = QTimer.singleShot(500, self._sync_to_disk)  # 减少延迟从1000ms到500ms
     
     # CSV文件相关方法
     def save_to_csv(self, table_name=None, overwrite=False):

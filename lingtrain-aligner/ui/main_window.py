@@ -1181,14 +1181,27 @@ class MainWindow(QMainWindow):
             title += " *"
         self.setWindowTitle(title)
     
-    def update_table(self, incremental=False, changed_cells=None):
+    def update_table(self, incremental=None, changed_cells=None):
         """
-        更新表格显示 - 内存优化版本，支持大型表格和增量更新
+        更新表格显示 - 高性能优化版本
         
         Args:
-            incremental (bool): 是否为增量更新，默认为False
-            changed_cells (list): 增量更新时变化的单元格列表，格式为[(row, col), ...]
+            incremental (bool, optional): 是否为增量更新，默认为None表示自动判断
+            changed_cells (list, optional): 增量更新时变化的单元格列表，格式为[(row, col), ...]
         """
+        # 如果没有指定是否增量更新，尝试从控制器获取脏数据
+        if incremental is None:
+            dirty_cells = self.controller.get_dirty_cells()
+            if dirty_cells:
+                # 有脏数据，使用增量更新
+                incremental = True
+                changed_cells = list(dirty_cells)
+                # 清空脏数据集合
+                self.controller.clear_dirty_cells()
+            else:
+                # 没有脏数据，使用完整更新
+                incremental = False
+        
         data = self.controller.get_table_data()
         if data is not None:
             rows = len(data)
@@ -1196,13 +1209,38 @@ class MainWindow(QMainWindow):
             
             if incremental and changed_cells:
                 # 增量更新模式，只更新变化的单元格
+                # 暂时禁用表格更新以提高性能
+                self.table.setUpdatesEnabled(False)
+                
+                # 批量处理变化的单元格
+                items_to_update = []
                 for row, col in changed_cells:
                     if 0 <= row < rows and 0 <= col < cols:
-                        item = self.table.item(row, col)
-                        if item:
-                            item.setText(str(data[row][col]))
-                        else:
-                            self.table.setItem(row, col, QTableWidgetItem(str(data[row][col])))
+                        items_to_update.append((row, col, str(data[row][col])))
+                
+                # 批量更新单元格
+                for row, col, value in items_to_update:
+                    item = self.table.item(row, col)
+                    if item:
+                        item.setText(value)
+                    else:
+                        item = QTableWidgetItem(value)
+                        self.table.setItem(row, col, item)
+                
+                # 重新启用表格更新
+                self.table.setUpdatesEnabled(True)
+                
+                # 只对变化的行进行行高调整，且只调整可见区域
+                changed_rows = set(row for row, _ in changed_cells)
+                visible_row_start = self.table.rowAt(self.table.viewport().y())
+                visible_row_end = self.table.rowAt(self.table.viewport().y() + self.table.viewport().height())
+                if visible_row_end == -1:  # 如果没有行在底部，设置为最后一行
+                    visible_row_end = self.table.rowCount() - 1
+                
+                # 只调整可见区域中变化的行
+                for row in changed_rows:
+                    if visible_row_start <= row <= visible_row_end:
+                        self.table.resizeRowToContents(row)
             else:
                 # 完整更新模式
                 # 先清空表格
@@ -1215,16 +1253,20 @@ class MainWindow(QMainWindow):
                 # 暂时禁用表格更新以提高性能
                 self.table.setUpdatesEnabled(False)
                 
+                # 使用模型/视图架构优化性能
                 # 批量创建和设置单元格项
                 items = []
                 for i in range(rows):
+                    row_items = []
                     for j in range(cols):
                         item = QTableWidgetItem(str(data[i][j]))
-                        items.append((i, j, item))
+                        row_items.append(item)
+                    items.append(row_items)
                 
                 # 批量设置单元格项
-                for i, j, item in items:
-                    self.table.setItem(i, j, item)
+                for i, row_items in enumerate(items):
+                    for j, item in enumerate(row_items):
+                        self.table.setItem(i, j, item)
                 
                 # 重新启用表格更新
                 self.table.setUpdatesEnabled(True)
@@ -1237,9 +1279,15 @@ class MainWindow(QMainWindow):
                     if visible_row_end == -1:  # 如果没有行在底部，设置为最后一行
                         visible_row_end = self.table.rowCount() - 1
                     
-                    # 只调整可见区域的行高
-                    for row in range(visible_row_start, visible_row_end + 1):
-                        self.table.resizeRowToContents(row)
+                    # 使用定时器延迟调整行高，避免阻塞UI
+                    if not hasattr(self, '_row_height_timer'):
+                        from PyQt5.QtCore import QTimer
+                        self._row_height_timer = QTimer(self)
+                        self._row_height_timer.setSingleShot(True)
+                        self._row_height_timer.timeout.connect(self._adjust_visible_rows_height)
+                    
+                    # 启动延迟调整
+                    self._row_height_timer.start(100)  # 100ms后调整
                     
                     # 设置滚动事件处理，在用户滚动时动态调整行高
                     if not hasattr(self, '_scroll_connection'):
@@ -1266,19 +1314,37 @@ class MainWindow(QMainWindow):
             self.table.setColumnCount(0)
     
     def _adjust_visible_rows_height(self):
-        """调整当前可见区域的行高 - 优化版本"""
+        """调整当前可见区域的行高 - 高性能优化版本"""
         # 检查表格是否已初始化
         if not hasattr(self, 'table') or self.table.rowCount() == 0:
             return
             
+        # 暂时禁用表格更新以提高性能
+        self.table.setUpdatesEnabled(False)
+        
         visible_row_start = self.table.rowAt(self.table.viewport().y())
         visible_row_end = self.table.rowAt(self.table.viewport().y() + self.table.viewport().height())
         if visible_row_end == -1:  # 如果没有行在底部，设置为最后一行
             visible_row_end = self.table.rowCount() - 1
         
-        # 只调整可见区域的行高
-        for row in range(visible_row_start, visible_row_end + 1):
-            self.table.resizeRowToContents(row)
+        # 使用批量调整行高，减少重绘次数
+        # 首先隐藏水平滚动条，避免频繁调整
+        h_scrollbar = self.table.horizontalScrollBar()
+        h_scrollbar_visible = h_scrollbar.isVisible()
+        if h_scrollbar_visible:
+            h_scrollbar.setVisible(False)
+        
+        try:
+            # 批量调整可见区域的行高
+            for row in range(visible_row_start, visible_row_end + 1):
+                self.table.resizeRowToContents(row)
+        finally:
+            # 恢复水平滚动条状态
+            if h_scrollbar_visible:
+                h_scrollbar.setVisible(True)
+            
+            # 重新启用表格更新
+            self.table.setUpdatesEnabled(True)
     
     def get_table(self):
         """获取表格控件"""

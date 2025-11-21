@@ -357,6 +357,31 @@ class CSVTableController:
         """
         return self.command_history.can_redo()
     
+    def get_dirty_cells(self):
+        """
+        获取所有修改过的单元格坐标
+        
+        Returns:
+            set: 修改过的单元格坐标集合 {(row, col), ...}
+        """
+        return self.data_manager.get_dirty_cells()
+    
+    def clear_dirty_cells(self):
+        """清空脏数据集合"""
+        self.data_manager.clear_dirty_cells()
+    
+    def get_hot_cells(self, threshold=5):
+        """
+        获取访问次数超过阈值的单元格坐标
+        
+        Args:
+            threshold (int): 访问次数阈值，默认为5
+            
+        Returns:
+            list: 访问次数超过阈值的单元格坐标列表 [(row, col, count), ...]
+        """
+        return self.data_manager.get_hot_cells(threshold)
+    
     def execute_command(self, command):
         """
         执行命令并添加到历史记录
