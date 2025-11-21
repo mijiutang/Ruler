@@ -815,7 +815,12 @@ class MainWindow(QMainWindow):
         font = QFont("Arial", 12)
         self.table.setFont(font)
         
-        # 设置粘贴快捷键
+        # 设置复制和粘贴快捷键
+        self.copy_action = QAction("复制", self)
+        self.copy_action.setShortcut(QKeySequence.Copy)
+        self.copy_action.triggered.connect(self.on_copy)
+        self.addAction(self.copy_action)
+        
         self.paste_action = QAction("粘贴", self)
         self.paste_action.setShortcut(QKeySequence.Paste)
         self.paste_action.triggered.connect(self.on_paste)
@@ -1258,6 +1263,44 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "错误", f"无法刷新表格: {self.controller.current_table_name}")
         else:
             QMessageBox.information(self, "提示", "没有打开的表格可刷新")
+    
+    def on_copy(self):
+        """复制选中的单元格内容到剪贴板"""
+        # 获取选中的单元格范围
+        selected_ranges = self.table.selectedRanges()
+        
+        if not selected_ranges:
+            return
+        
+        # 获取选中区域的数据
+        range_ = selected_ranges[0]
+        top_row = range_.topRow()
+        bottom_row = range_.bottomRow()
+        left_col = range_.leftColumn()
+        right_col = range_.rightColumn()
+        
+        # 构造要复制的文本
+        copied_text = ""
+        for row in range(top_row, bottom_row + 1):
+            row_data = []
+            for col in range(left_col, right_col + 1):
+                item = self.table.item(row, col)
+                if item:
+                    row_data.append(item.text())
+                else:
+                    row_data.append("")
+            
+            # 使用制表符分隔列，换行符分隔行
+            copied_text += "\t".join(row_data)
+            if row < bottom_row:
+                copied_text += "\n"
+        
+        # 将文本复制到剪贴板
+        clipboard = QApplication.clipboard()
+        clipboard.setText(copied_text)
+        
+        # 显示状态消息
+        self.statusBar().showMessage(f"已复制 {bottom_row - top_row + 1} 行 {right_col - left_col + 1} 列的数据")
     
     def on_paste(self):
         """粘贴事件处理 - 优化版本，支持大量数据粘贴"""
