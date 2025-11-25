@@ -60,6 +60,9 @@ class CSVTableController:
             col (int): 列索引
             value (str): 单元格值
             use_command (bool): 是否使用命令模式，默认为True
+            
+        Returns:
+            list: 变化的单元格列表，用于增量更新
         """
         old_value = self.data_manager.get_cell_data(row, col)
         if old_value != value:
@@ -67,11 +70,14 @@ class CSVTableController:
                 # 使用命令模式
                 from utils.table_commands import EditCellCommand
                 command = EditCellCommand(self.data_manager, row, col, value, old_value)
-                self.execute_command(command)
+                return self.execute_command(command)
             else:
                 # 直接设置数据
                 self.data_manager.set_cell_data(row, col, value)
                 self.is_modified = True
+                # 返回变化的单元格，用于增量更新
+                return [(row, col)]
+        return []  # 如果值没有变化，返回空列表
     
     def add_row(self, position=None, use_command=True):
         """
@@ -80,16 +86,27 @@ class CSVTableController:
         Args:
             position (int, optional): 添加位置，默认在末尾添加
             use_command (bool): 是否使用命令模式，默认为True
+            
+        Returns:
+            list: 变化的单元格列表，用于增量更新
         """
         if use_command and self.main_window:
             # 使用命令模式
             from utils.table_commands import InsertRowCommand
             command = InsertRowCommand(self.data_manager, position)
-            self.execute_command(command)
+            return self.execute_command(command)
         else:
             # 直接添加行
             self.data_manager.add_row(position)
             self.is_modified = True
+            
+            # 计算变化的单元格，用于增量更新
+            if position is None:
+                position = self.data_manager.rows - 1
+            
+            # 返回新添加行的所有单元格
+            changed_cells = [(position, col) for col in range(self.data_manager.cols)]
+            return changed_cells
     
     def add_column(self, position=None, use_command=True):
         """
@@ -98,16 +115,27 @@ class CSVTableController:
         Args:
             position (int, optional): 添加位置，默认在末尾添加
             use_command (bool): 是否使用命令模式，默认为True
+            
+        Returns:
+            list: 变化的单元格列表，用于增量更新
         """
         if use_command and self.main_window:
             # 使用命令模式
             from utils.table_commands import InsertColumnCommand
             command = InsertColumnCommand(self.data_manager, position)
-            self.execute_command(command)
+            return self.execute_command(command)
         else:
             # 直接添加列
             self.data_manager.add_column(position)
             self.is_modified = True
+            
+            # 计算变化的单元格，用于增量更新
+            if position is None:
+                position = self.data_manager.cols - 1
+            
+            # 返回新添加列的所有单元格
+            changed_cells = [(row, position) for row in range(self.data_manager.rows)]
+            return changed_cells
     
     def delete_row(self, position, use_command=True):
         """
@@ -118,20 +146,24 @@ class CSVTableController:
             use_command (bool): 是否使用命令模式，默认为True
             
         Returns:
-            bool: 删除是否成功
+            list: 变化的单元格列表，用于增量更新
         """
         if use_command and self.main_window:
             # 使用命令模式
             from utils.table_commands import DeleteRowCommand
             command = DeleteRowCommand(self.data_manager, position)
-            self.execute_command(command)
-            return True
+            return self.execute_command(command)
         else:
             # 直接删除行
             result = self.data_manager.delete_row(position)
             if result:
                 self.is_modified = True
-            return result
+                # 返回受影响的所有单元格，用于增量更新
+                # 从删除行到最后一行的所有单元格
+                changed_cells = [(row, col) for row in range(position, self.data_manager.rows+1) 
+                               for col in range(self.data_manager.cols)]
+                return changed_cells
+            return []
     
     def delete_column(self, position, use_command=True):
         """
@@ -142,20 +174,24 @@ class CSVTableController:
             use_command (bool): 是否使用命令模式，默认为True
             
         Returns:
-            bool: 删除是否成功
+            list: 变化的单元格列表，用于增量更新
         """
         if use_command and self.main_window:
             # 使用命令模式
             from utils.table_commands import DeleteColumnCommand
             command = DeleteColumnCommand(self.data_manager, position)
-            self.execute_command(command)
-            return True
+            return self.execute_command(command)
         else:
             # 直接删除列
             result = self.data_manager.delete_column(position)
             if result:
                 self.is_modified = True
-            return result
+                # 返回受影响的所有单元格，用于增量更新
+                # 从删除列到最后一列的所有单元格
+                changed_cells = [(row, col) for row in range(self.data_manager.rows) 
+                               for col in range(position, self.data_manager.cols+1)]
+                return changed_cells
+            return []
     
     def get_row_count(self):
         """获取行数"""

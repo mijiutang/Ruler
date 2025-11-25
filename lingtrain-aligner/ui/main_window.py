@@ -648,6 +648,11 @@ class MainWindow(QMainWindow):
         self.controller.set_main_window(self)
         self.save_action = None  # 保存动作引用
         
+        # 性能优化：添加延迟更新定时器
+        self._update_timer = None
+        self._pending_update = False
+        self._update_delay = 100  # 延迟100ms更新UI，减少频繁刷新
+        
         # 初始化配置管理器
         self.config_manager = ConfigManager()
         
@@ -690,14 +695,28 @@ class MainWindow(QMainWindow):
             # 检查是否按下了Ctrl+Z (撤回)
             if event.key() == Qt.Key_Z and event.modifiers() == Qt.ControlModifier:
                 if self.controller.can_undo():
-                    self.controller.undo()
+                    # 执行撤回并获取变化的单元格
+                    changed_cells = self.controller.undo()
+                    # 如果有变化的单元格，使用增量更新
+                    if changed_cells:
+                        self.update_table(incremental=True, changed_cells=changed_cells)
+                    else:
+                        # 否则使用延迟更新
+                        self._delayed_update_table()
                     self.statusBar().showMessage("已撤回操作")
                 return True  # 事件已被处理
             
             # 检查是否按下了Ctrl+Y (重做)
             if event.key() == Qt.Key_Y and event.modifiers() == Qt.ControlModifier:
                 if self.controller.can_redo():
-                    self.controller.redo()
+                    # 执行重做并获取变化的单元格
+                    changed_cells = self.controller.redo()
+                    # 如果有变化的单元格，使用增量更新
+                    if changed_cells:
+                        self.update_table(incremental=True, changed_cells=changed_cells)
+                    else:
+                        # 否则使用延迟更新
+                        self._delayed_update_table()
                     self.statusBar().showMessage("已重做操作")
                 return True  # 事件已被处理
             
@@ -706,6 +725,7 @@ class MainWindow(QMainWindow):
                 # 获取当前选中的单元格
                 selected_ranges = self.table.selectedRanges()
                 if selected_ranges:
+                    changed_cells = []
                     # 处理每个选中的范围
                     for range_ in selected_ranges:
                         top_row = range_.topRow()
@@ -719,14 +739,22 @@ class MainWindow(QMainWindow):
                                 item = self.table.item(row, col)
                                 if item:
                                     item.setText("")
-                                    # 通知控制器数据已更改
-                                    self.controller.set_cell_data(row, col, "")
+                                    # 通知控制器数据已更改并获取变化的单元格
+                                    cell_changed = self.controller.set_cell_data(row, col, "")
+                                    if cell_changed:
+                                        changed_cells.extend(cell_changed)
                                 else:
                                     # 如果单元格不存在，创建一个新的空单元格
                                     item = QTableWidgetItem("")
                                     self.table.setItem(row, col, item)
-                                    # 通知控制器数据已更改
-                                    self.controller.set_cell_data(row, col, "")
+                                    # 通知控制器数据已更改并获取变化的单元格
+                                    cell_changed = self.controller.set_cell_data(row, col, "")
+                                    if cell_changed:
+                                        changed_cells.extend(cell_changed)
+                    
+                    # 使用增量更新UI
+                    if changed_cells:
+                        self.update_table(incremental=True, changed_cells=changed_cells)
                     
                     # 显示状态消息
                     self.statusBar().showMessage("已清除选中单元格的内容")
@@ -1092,15 +1120,27 @@ class MainWindow(QMainWindow):
     
     def on_add_row(self):
         """添加行事件处理"""
-        self.controller.add_row()
+        # 添加行并获取变化的单元格
+        changed_cells = self.controller.add_row()
+        # 如果有变化的单元格，使用增量更新
+        if changed_cells:
+            self.update_table(incremental=True, changed_cells=changed_cells)
+        else:
+            # 否则使用延迟更新
+            self._delayed_update_table()
         self.statusBar().showMessage("已添加新行")
     
     def on_add_column(self):
         """添加列事件处理"""
-        self.controller.add_column()
+        # 添加列并获取变化的单元格
+        changed_cells = self.controller.add_column()
         
-        # 更新表格显示
-        self.update_table()
+        # 如果有变化的单元格，使用增量更新
+        if changed_cells:
+            self.update_table(incremental=True, changed_cells=changed_cells)
+        else:
+            # 否则使用延迟更新
+            self._delayed_update_table()
         
         # 为新添加的列设置Stretch模式
         header = self.table.horizontalHeader()
@@ -1112,10 +1152,14 @@ class MainWindow(QMainWindow):
 
     
     def on_cell_changed(self, row, col):
-        """单元格内容变化事件处理 - 优化版本，减少磁盘同步频率"""
+        """单元格内容变化事件处理 - 优化版本，使用增量更新"""
         value = self.table.item(row, col).text() if self.table.item(row, col) else ""
-        # 使用命令模式设置单元格数据
-        self.controller.set_cell_data(row, col, value)
+        # 使用命令模式设置单元格数据，并获取变化的单元格
+        changed_cells = self.controller.set_cell_data(row, col, value)
+        
+        # 如果有变化的单元格，使用增量更新
+        if changed_cells:
+            self.update_table(incremental=True, changed_cells=changed_cells)
         
         # 只对当前修改的行进行行高调整，而不是所有行
         self.table.resizeRowToContents(row)
@@ -1184,9 +1228,27 @@ class MainWindow(QMainWindow):
             title += " *"
         self.setWindowTitle(title)
     
+    def _delayed_update_table(self):
+        """延迟更新表格显示，减少频繁刷新"""
+        if self._update_timer:
+            self._update_timer.stop()
+            
+        from PyQt5.QtCore import QTimer
+        self._update_timer = QTimer()
+        self._update_timer.setSingleShot(True)
+        self._update_timer.timeout.connect(self._execute_pending_update)
+        self._pending_update = True
+        self._update_timer.start(self._update_delay)
+    
+    def _execute_pending_update(self):
+        """执行待处理的表格更新"""
+        if self._pending_update:
+            self._pending_update = False
+            self.update_table()
+    
     def update_table(self, incremental=False, changed_cells=None):
         """
-        更新表格显示 - 内存优化版本，支持大型表格和增量更新
+        更新表格显示 - 高性能版本，支持大型表格和增量更新
         
         Args:
             incremental (bool): 是否为增量更新，默认为False
@@ -1199,6 +1261,7 @@ class MainWindow(QMainWindow):
             
             if incremental and changed_cells:
                 # 增量更新模式，只更新变化的单元格
+                self.table.setUpdatesEnabled(False)  # 禁用更新以提高性能
                 for row, col in changed_cells:
                     if 0 <= row < rows and 0 <= col < cols:
                         item = self.table.item(row, col)
@@ -1206,31 +1269,52 @@ class MainWindow(QMainWindow):
                             item.setText(str(data[row][col]))
                         else:
                             self.table.setItem(row, col, QTableWidgetItem(str(data[row][col])))
+                self.table.setUpdatesEnabled(True)  # 重新启用更新
             else:
                 # 完整更新模式
-                # 先清空表格
-                self.table.clear()
+                # 检查当前表格尺寸是否需要调整
+                current_rows = self.table.rowCount()
+                current_cols = self.table.columnCount()
                 
-                # 重新设置行列数
-                self.table.setRowCount(rows)
-                self.table.setColumnCount(cols)
-                
-                # 暂时禁用表格更新以提高性能
-                self.table.setUpdatesEnabled(False)
-                
-                # 批量创建和设置单元格项
-                items = []
-                for i in range(rows):
-                    for j in range(cols):
-                        item = QTableWidgetItem(str(data[i][j]))
-                        items.append((i, j, item))
-                
-                # 批量设置单元格项
-                for i, j, item in items:
-                    self.table.setItem(i, j, item)
-                
-                # 重新启用表格更新
-                self.table.setUpdatesEnabled(True)
+                # 如果尺寸相同，只更新内容而不是重建整个表格
+                if current_rows == rows and current_cols == cols:
+                    self.table.setUpdatesEnabled(False)  # 禁用更新以提高性能
+                    
+                    # 批量更新单元格内容
+                    for i in range(rows):
+                        for j in range(cols):
+                            item = self.table.item(i, j)
+                            if item:
+                                item.setText(str(data[i][j]))
+                            else:
+                                self.table.setItem(i, j, QTableWidgetItem(str(data[i][j])))
+                    
+                    self.table.setUpdatesEnabled(True)  # 重新启用更新
+                else:
+                    # 尺寸不同，需要重建表格
+                    # 先清空表格
+                    self.table.clear()
+                    
+                    # 重新设置行列数
+                    self.table.setRowCount(rows)
+                    self.table.setColumnCount(cols)
+                    
+                    # 暂时禁用表格更新以提高性能
+                    self.table.setUpdatesEnabled(False)
+                    
+                    # 批量创建和设置单元格项
+                    items = []
+                    for i in range(rows):
+                        for j in range(cols):
+                            item = QTableWidgetItem(str(data[i][j]))
+                            items.append((i, j, item))
+                    
+                    # 批量设置单元格项
+                    for i, j, item in items:
+                        self.table.setItem(i, j, item)
+                    
+                    # 重新启用表格更新
+                    self.table.setUpdatesEnabled(True)
                 
                 # 对于大型表格，延迟调整行高以提高性能
                 if rows > 1000:
@@ -1250,9 +1334,9 @@ class MainWindow(QMainWindow):
                             self._adjust_visible_rows_height
                         )
                 else:
-                    # 对于小型表格，调整所有行高
-                    for row in range(rows):
-                        self.table.resizeRowToContents(row)
+                    # 对于小型表格，延迟调整行高以提高响应速度
+                    from PyQt5.QtCore import QTimer
+                    QTimer.singleShot(50, self._delayed_adjust_all_rows_height)
                 
                 # 设置列宽为Stretch模式，确保列宽适应窗口
                 header = self.table.horizontalHeader()
@@ -1267,6 +1351,12 @@ class MainWindow(QMainWindow):
             self.table.clear()
             self.table.setRowCount(0)
             self.table.setColumnCount(0)
+    
+    def _delayed_adjust_all_rows_height(self):
+        """延迟调整所有行高，提高响应速度"""
+        rows = self.table.rowCount()
+        for row in range(rows):
+            self.table.resizeRowToContents(row)
     
     def _adjust_visible_rows_height(self):
         """调整当前可见区域的行高 - 优化版本"""
@@ -1338,7 +1428,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"已复制 {bottom_row - top_row + 1} 行 {right_col - left_col + 1} 列的数据")
     
     def on_paste(self):
-        """粘贴事件处理 - 优化版本，支持大量数据粘贴"""
+        """粘贴事件处理 - 优化版本，支持大量数据粘贴并使用增量更新"""
         clipboard = QApplication.clipboard()
         text = clipboard.text()
         
@@ -1445,6 +1535,11 @@ class MainWindow(QMainWindow):
             
             # 重新启用表格更新
             self.table.setUpdatesEnabled(True)
+            
+            # 使用增量更新所有变化的单元格
+            changed_cells = [(row, col) for row, col, _ in items_to_set]
+            if changed_cells:
+                self.update_table(incremental=True, changed_cells=changed_cells)
             
             # 只对粘贴的行进行行高调整，且只调整可见区域
             visible_row_start = self.table.rowAt(self.table.viewport().y())
@@ -1748,10 +1843,14 @@ class MainWindow(QMainWindow):
     
     def insert_row_at_position(self, row):
         """在指定位置插入行"""
-        # 调用控制器方法插入行
-        self.controller.add_row(row)
-        # 更新表格显示
-        self.update_table()
+        # 调用控制器方法插入行并获取变化的单元格
+        changed_cells = self.controller.add_row(row)
+        # 如果有变化的单元格，使用增量更新
+        if changed_cells:
+            self.update_table(incremental=True, changed_cells=changed_cells)
+        else:
+            # 否则使用延迟更新
+            self._delayed_update_table()
         # 设置新行的高度
         self.table.setRowHeight(row, 30)
         # 更新状态栏消息
@@ -1759,10 +1858,14 @@ class MainWindow(QMainWindow):
     
     def insert_column_at_position(self, col):
         """在指定位置插入列"""
-        # 调用控制器方法插入列
-        self.controller.add_column(col)
-        # 更新表格显示
-        self.update_table()
+        # 调用控制器方法插入列并获取变化的单元格
+        changed_cells = self.controller.add_column(col)
+        # 如果有变化的单元格，使用增量更新
+        if changed_cells:
+            self.update_table(incremental=True, changed_cells=changed_cells)
+        else:
+            # 否则使用延迟更新
+            self._delayed_update_table()
         # 设置新列的宽度
         self.table.setColumnWidth(col, 100)
         # 更新状态栏消息
@@ -1771,25 +1874,31 @@ class MainWindow(QMainWindow):
     def delete_row_at_position(self, row):
         """删除指定行"""
         if self.table.rowCount() > 1:  # 确保至少保留一行
-            # 调用控制器方法删除行
-            result = self.controller.delete_row(row)
-            if result:
-                # 更新表格显示
-                self.update_table()
-                # 更新状态栏消息
-                self.statusBar().showMessage(f"已删除第{row + 1}行")
+            # 调用控制器方法删除行并获取变化的单元格
+            changed_cells = self.controller.delete_row(row)
+            if changed_cells:
+                # 使用增量更新
+                self.update_table(incremental=True, changed_cells=changed_cells)
+            else:
+                # 使用延迟更新机制，减少UI更新频率
+                self._delayed_update_table()
+            # 更新状态栏消息
+            self.statusBar().showMessage(f"已删除第{row + 1}行")
         else:
             QMessageBox.warning(self, "操作失败", "至少需要保留一行")
     
     def delete_column_at_position(self, col):
         """删除指定列"""
         if self.table.columnCount() > 1:  # 确保至少保留一列
-            # 调用控制器方法删除列
-            result = self.controller.delete_column(col)
-            if result:
-                # 更新表格显示
-                self.update_table()
-                # 更新状态栏消息
-                self.statusBar().showMessage(f"已删除第{col + 1}列")
+            # 调用控制器方法删除列并获取变化的单元格
+            changed_cells = self.controller.delete_column(col)
+            if changed_cells:
+                # 使用增量更新
+                self.update_table(incremental=True, changed_cells=changed_cells)
+            else:
+                # 使用延迟更新机制，减少UI更新频率
+                self._delayed_update_table()
+            # 更新状态栏消息
+            self.statusBar().showMessage(f"已删除第{col + 1}列")
         else:
             QMessageBox.warning(self, "操作失败", "至少需要保留一列")
